@@ -24,7 +24,7 @@ enum Message {
     },
     NewMessage {
         author_addr: SocketAddr,
-        message: Vec<u8>,
+        bytes: Vec<u8>,
     },
 }
 
@@ -48,13 +48,12 @@ fn server(messages: Receiver<Message>) {
                 clients.remove_entry(&author_addr);
             }
 
-            Message::NewMessage {
-                author_addr,
-                message,
-            } => {
-                for (client_addr, client) in clients.iter() {
-                    if author_addr != *client_addr {
-                        let _ = client.conn.as_ref().write_all(&message);
+            Message::NewMessage { author_addr, bytes } => {
+                if std::str::from_utf8(&bytes).is_ok() {
+                    for (client_addr, client) in clients.iter() {
+                        if author_addr != *client_addr {
+                            let _ = client.conn.as_ref().write_all(&bytes);
+                        }
                     }
                 }
             }
@@ -82,7 +81,7 @@ fn client(stream: TcpStream, messages: Sender<Message>) -> Result<(), std::io::E
 
         let _ = messages.send(Message::NewMessage {
             author_addr,
-            message: line.into(),
+            bytes: line.into(),
         });
     }
 
