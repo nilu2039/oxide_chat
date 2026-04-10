@@ -45,7 +45,7 @@ fn server(messages: Receiver<Message>) {
 }
 
 pub fn start() -> Result<(), std::io::Error> {
-    let listener = TcpListener::bind(ADDRESS)?;
+    let listener = TcpListener::bind(ADDRESS).expect("ERROR: Failed to get a Tcp listener");
 
     let (message_sender, message_receiver) = channel();
     thread::spawn(|| server(message_receiver));
