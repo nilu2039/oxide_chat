@@ -35,12 +35,7 @@ fn server(messages: Receiver<Message>) {
         match msg {
             Message::ClientConnected { author } => {
                 let addr = author.peer_addr().expect("Unable to get client address");
-                clients.insert(
-                    addr,
-                    Client {
-                        conn: author.clone(),
-                    },
-                );
+                clients.insert(addr, Client { conn: author });
             }
 
             Message::ClientDisconnected { author_addr } => {
