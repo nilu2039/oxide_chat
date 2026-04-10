@@ -29,12 +29,16 @@ enum Message {
 fn server(messages: Receiver<Message>) {
     let mut clients = HashMap::new();
 
-    loop {
-        let msg = messages.recv().unwrap();
-
+    while let Ok(msg) = messages.recv() {
         match msg {
             Message::ClientConnected { author } => {
-                let addr = author.peer_addr().expect("Unable to get client address");
+                let addr = match author.peer_addr() {
+                    Ok(addr) => addr,
+                    Err(err) => {
+                        eprintln!("ERROR: failed to get client address: {err}");
+                        continue;
+                    }
+                };
                 clients.insert(addr, Client { conn: author });
             }
 
@@ -62,7 +66,8 @@ fn client(stream: TcpStream, messages: Sender<Message>) -> Result<(), std::io::E
     let _ = messages.send(Message::ClientConnected {
         author: stream.clone(),
     });
-    let author_addr = stream.peer_addr().expect("Unable to get author address");
+
+    let author_addr = stream.peer_addr()?;
 
     loop {
         let mut line = String::new();
@@ -90,7 +95,6 @@ pub fn start() -> Result<(), std::io::Error> {
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
-                // let stream = Arc::new(s);
                 let message_sender = message_sender.clone();
                 thread::spawn(|| client(s, message_sender));
             }
