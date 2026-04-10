@@ -1,32 +1,15 @@
 use std::{
     collections::HashMap,
-    io::{BufRead, BufReader, Write},
-    net::{SocketAddr, TcpListener, TcpStream},
-    sync::{
-        Arc,
-        mpsc::{Receiver, Sender, channel},
-    },
+    io::Write,
+    net::TcpListener,
+    sync::mpsc::{Receiver, channel},
     thread,
 };
 
+use crate::client::{Client, client};
+use crate::common::Message;
+
 const ADDRESS: &str = "0.0.0.0:8080";
-
-struct Client {
-    conn: Arc<TcpStream>,
-}
-
-enum Message {
-    ClientConnected {
-        author: Arc<TcpStream>,
-    },
-    ClientDisconnected {
-        author_addr: SocketAddr,
-    },
-    NewMessage {
-        author_addr: SocketAddr,
-        bytes: Vec<u8>,
-    },
-}
 
 fn server(messages: Receiver<Message>) {
     let mut clients = HashMap::new();
@@ -59,33 +42,6 @@ fn server(messages: Receiver<Message>) {
             }
         }
     }
-}
-
-fn client(stream: TcpStream, messages: Sender<Message>) -> Result<(), std::io::Error> {
-    let stream = Arc::new(stream);
-    let mut reader = BufReader::new(stream.as_ref());
-    let _ = messages.send(Message::ClientConnected {
-        author: stream.clone(),
-    });
-
-    let author_addr = stream.peer_addr()?;
-
-    loop {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line)?;
-
-        if n == 0 {
-            let _ = messages.send(Message::ClientDisconnected { author_addr });
-            break;
-        }
-
-        let _ = messages.send(Message::NewMessage {
-            author_addr,
-            bytes: line.into(),
-        });
-    }
-
-    Ok(())
 }
 
 pub fn start() -> Result<(), std::io::Error> {

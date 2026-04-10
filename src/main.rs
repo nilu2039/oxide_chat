@@ -1,3 +1,5 @@
+mod client;
+mod common;
 mod server;
 
 fn main() {
