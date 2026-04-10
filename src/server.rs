@@ -51,13 +51,8 @@ fn server(messages: Receiver<Message>) {
                 author_addr,
                 message,
             } => {
-                for client in clients.values() {
-                    let client_address = client
-                        .conn
-                        .peer_addr()
-                        .expect("Unable to get client address");
-
-                    if author_addr != client_address {
+                for (client_addr, client) in clients.iter() {
+                    if author_addr != *client_addr {
                         let _ = client.conn.as_ref().write_all(&message);
                     }
                 }
