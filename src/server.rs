@@ -100,8 +100,8 @@ pub fn start() -> Result<(), std::io::Error> {
                 let message_sender = message_sender.clone();
                 thread::spawn(|| client(s, message_sender));
             }
-            Err(e) => {
-                panic!("{e:?}");
+            Err(err) => {
+                eprintln!("ERROR: Failed to receive client tcp stream, {err}");
             }
         }
     }
