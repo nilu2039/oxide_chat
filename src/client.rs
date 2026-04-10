@@ -30,6 +30,7 @@ pub fn client(stream: TcpStream, messages: Sender<Message>) {
             Ok(n) => n,
             Err(err) => {
                 eprintln!("ERROR: Failed to read from client stream, {err}");
+                let _ = messages.send(Message::ClientDisconnected { author_addr });
                 break;
             }
         };
