@@ -9,6 +9,8 @@ use std::{
     thread,
 };
 
+const ADDRESS: &str = "0.0.0.0:8080";
+
 struct Client {
     conn: Arc<TcpStream>,
 }
@@ -83,11 +85,12 @@ fn client(stream: TcpStream, messages: Sender<Message>) -> Result<(), std::io::E
             message: line.into(),
         });
     }
+
     Ok(())
 }
 
 pub fn start() -> Result<(), std::io::Error> {
-    let listener = TcpListener::bind("0.0.0.0:8080")?;
+    let listener = TcpListener::bind(ADDRESS)?;
 
     let (message_sender, message_receiver) = channel();
     thread::spawn(|| server(message_receiver));
@@ -99,7 +102,7 @@ pub fn start() -> Result<(), std::io::Error> {
                 thread::spawn(|| client(s, message_sender));
             }
             Err(e) => {
-                panic!("{:?}", e);
+                panic!("{e:?}");
             }
         }
     }
