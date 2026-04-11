@@ -1,20 +1,17 @@
-use std::{
-    collections::HashMap,
-    io::Write,
-    net::TcpListener,
-    sync::mpsc::{Receiver, channel},
-    thread,
-};
+use std::collections::HashMap;
+
+use tokio::{io::AsyncWriteExt, net::TcpListener};
 
 use crate::client::{Client, client};
 use crate::common::Message;
+use tokio::sync::mpsc::{Receiver, channel};
 
 const ADDRESS: &str = "0.0.0.0:8080";
 
-fn server(messages: Receiver<Message>) {
+async fn server(mut messages: Receiver<Message>) {
     let mut clients = HashMap::new();
 
-    while let Ok(msg) = messages.recv() {
+    while let Some(msg) = messages.recv().await {
         match msg {
             Message::ClientConnected { author } => {
                 let addr = match author.peer_addr() {
@@ -33,9 +30,9 @@ fn server(messages: Receiver<Message>) {
 
             Message::NewMessage { author_addr, bytes } => {
                 if std::str::from_utf8(&bytes).is_ok() {
-                    for (client_addr, client) in clients.iter() {
+                    for (client_addr, client) in clients.iter_mut() {
                         if author_addr != *client_addr {
-                            let _ = client.conn.as_ref().write_all(&bytes);
+                            let _ = client.conn.write_all(&bytes).await;
                         }
                     }
                 }
@@ -44,23 +41,15 @@ fn server(messages: Receiver<Message>) {
     }
 }
 
-pub fn start() -> Result<(), std::io::Error> {
-    let listener = TcpListener::bind(ADDRESS).expect("ERROR: Failed to get a Tcp listener");
+pub async fn start() -> Result<(), std::io::Error> {
+    let listener = TcpListener::bind(ADDRESS).await?;
 
-    let (message_sender, message_receiver) = channel();
-    thread::spawn(|| server(message_receiver));
+    let (message_sender, message_receiver) = channel(100);
+    tokio::spawn(server(message_receiver));
 
-    for stream in listener.incoming() {
-        match stream {
-            Ok(s) => {
-                let message_sender = message_sender.clone();
-                thread::spawn(|| client(s, message_sender));
-            }
-            Err(err) => {
-                eprintln!("ERROR: Failed to receive client tcp stream, {err}");
-            }
-        }
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let message_sender = message_sender.clone();
+        tokio::spawn(client(stream, message_sender));
     }
-
-    Ok(())
 }

@@ -1,11 +1,9 @@
-use std::{
-    net::{SocketAddr, TcpStream},
-    sync::Arc,
-};
+use std::net::SocketAddr;
+use tokio::net::tcp::OwnedWriteHalf;
 
 pub enum Message {
     ClientConnected {
-        author: Arc<TcpStream>,
+        author: OwnedWriteHalf,
     },
     ClientDisconnected {
         author_addr: SocketAddr,

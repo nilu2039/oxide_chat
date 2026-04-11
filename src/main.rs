@@ -2,9 +2,11 @@ mod client;
 mod common;
 mod server;
 
-fn main() {
-    match server::start() {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    match server::start().await {
         Ok(_) => {}
-        Err(e) => println!("{:?}", e),
+        Err(e) => eprintln!("{:?}", e),
     };
+    Ok(())
 }
