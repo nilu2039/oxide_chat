@@ -69,6 +69,8 @@ pub async fn client(
     client_addr: SocketAddr,
     redis_client: redis::Client,
 ) {
+    let (read_stream, mut write_stream) = stream.into_split();
+
     let mut redis_conn = redis_client
         .get_connection()
         .expect("ERROR: Redis connection error");
@@ -79,8 +81,6 @@ pub async fn client(
         last_message: None,
         strike_count: 0,
     };
-
-    let (read_stream, mut write_stream) = stream.into_split();
 
     if is_client_banned {
         write_ban_msg_to_stream(write_stream, None).await;
@@ -99,11 +99,18 @@ pub async fn client(
             result = reader.read_until(b'\n', &mut buf) => {
                 match result {
                     Ok(n) => {
-
                         if n == 0 {
                             println!("INFO: A client disconnected with address: {client_addr:?}");
                             break;
                         }
+
+                        buf = buf
+                            .iter()
+                            .copied()
+                            .filter(|b| *b >= 32 && *b != 127)
+                            .collect();
+                        buf.push(b'\n');
+                        let n = buf.len();
 
                         if !std::str::from_utf8(&buf[..n]).is_ok() {
                             eprintln!("ERROR: Stream did not contain valid UTF-8");
