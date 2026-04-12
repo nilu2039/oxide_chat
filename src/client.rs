@@ -1,7 +1,9 @@
+use redis::Commands;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::broadcast::{Receiver, Sender};
 
 const MESSAGE_RATE: Duration = Duration::from_secs(1);
@@ -20,18 +22,65 @@ struct Client {
     strike_count: usize,
 }
 
+async fn write_ban_msg_to_stream(mut write_stream: OwnedWriteHalf, msg: Option<&str>) {
+    println!("INFO: User is banned");
+
+    let msg = match msg {
+        Some(msg) => msg,
+        None => "You are banned\n",
+    };
+
+    if let Err(e) = write_stream.write_all(msg.as_bytes()).await {
+        eprintln!("Write error: {e}");
+        return;
+    }
+    let _ = write_stream.shutdown().await;
+}
+
+fn is_banned(redis_conn: &mut redis::Connection, client_addr: &SocketAddr) -> bool {
+    let is_client_banned = match redis_conn.get(format!("ban_user_{ip}", ip = client_addr.ip())) {
+        Ok(b) => b,
+        Err(err) => {
+            eprintln!("ERROR: Unable to get banned user, {err}");
+            false
+        }
+    };
+
+    return is_client_banned;
+}
+
+fn ban_user(redis_conn: &mut redis::Connection, client_addr: &SocketAddr) {
+    let _ = redis_conn
+        .set::<std::string::String, bool, ()>(format!("ban_user_{ip}", ip = client_addr.ip()), true)
+        .map_err(|err| {
+            eprintln!("ERROR: Unable to set redis ban key, {err}");
+        });
+}
+
 pub async fn client(
     stream: TcpStream,
     client_tx: Sender<Message>,
     mut client_rx: Receiver<Message>,
     client_addr: SocketAddr,
+    redis_client: redis::Client,
 ) {
+    let mut redis_conn = redis_client
+        .get_connection()
+        .expect("ERROR: Redis connection error");
+
+    let is_client_banned = is_banned(&mut redis_conn, &client_addr);
+
     let mut client = Client {
         last_message: None,
         strike_count: 0,
     };
 
     let (read_stream, mut write_stream) = stream.into_split();
+
+    if is_client_banned {
+        write_ban_msg_to_stream(write_stream, None).await;
+        return;
+    }
 
     println!("INFO: A client connected with address: {client_addr:?}");
 
@@ -53,7 +102,8 @@ pub async fn client(
 
                         if !std::str::from_utf8(&buf[..n]).is_ok() {
                             eprintln!("ERROR: Stream did not contain valid UTF-8");
-                            let _ = write_stream.write_all(b"Sent invalid UTF-8, you are banned.\n").await;
+                            ban_user(&mut redis_conn, &client_addr);
+                            write_ban_msg_to_stream(write_stream, Option::from("Invalid UTF-8, you are banned\n")).await;
                             println!("INFO: Client disconnected with address: {client_addr:?}");
                             break;
                         }
@@ -75,7 +125,8 @@ pub async fn client(
                         } else {
                             client.strike_count += 1;
                             if client.strike_count >= MAX_STRIKE_COUNT {
-                                let _ = write_stream.write_all(b"You are banned\n").await;
+                                ban_user(&mut redis_conn, &client_addr);
+                                write_ban_msg_to_stream(write_stream, None).await;
                                 break;
                             }
                             let bytes = std::format!("You are sending messages too fast, please slow down, {secs} secs left.\n", secs = (MESSAGE_RATE - diff).as_secs_f32()).into_bytes();

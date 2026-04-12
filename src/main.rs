@@ -1,4 +1,5 @@
 mod client;
+extern crate redis;
 
 use crate::client::client;
 use tokio::net::TcpListener;
@@ -7,6 +8,9 @@ use tokio::sync::broadcast::channel;
 const ADDRESS: &str = "0.0.0.0:8080";
 
 async fn start() -> Result<(), std::io::Error> {
+    let redis_client =
+        redis::Client::open("redis://127.0.0.1:6379").expect("ERROR: Redis url check fail");
+
     let listener = TcpListener::bind(ADDRESS).await?;
 
     let (client_tx, _) = channel(16);
@@ -15,7 +19,8 @@ async fn start() -> Result<(), std::io::Error> {
         let (stream, addr) = listener.accept().await?;
         let client_tx = client_tx.clone();
         let client_rx = client_tx.subscribe();
-        tokio::spawn(client(stream, client_tx, client_rx, addr));
+        let redis_client = redis_client.clone();
+        tokio::spawn(client(stream, client_tx, client_rx, addr, redis_client));
     }
 }
 
