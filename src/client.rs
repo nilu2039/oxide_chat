@@ -36,23 +36,30 @@ pub async fn client(
     println!("INFO: A client connected with address: {client_addr:?}");
 
     let mut reader = BufReader::new(read_stream);
-    let mut line = String::new();
+    let mut buf = Vec::new();
 
     loop {
-        line.clear();
+        buf.clear();
 
         tokio::select! {
-            result = reader.read_line(&mut line) => {
+            result = reader.read_until(b'\n', &mut buf) => {
                 match result {
                     Ok(n) => {
+
                         if n == 0 {
                             println!("INFO: A client disconnected with address: {client_addr:?}");
                             break;
                         }
 
+                        if !std::str::from_utf8(&buf[..n]).is_ok() {
+                            eprintln!("ERROR: Stream did not contain valid UTF-8");
+                            let _ = write_stream.write_all(b"Sent invalid UTF-8, you are banned.\n").await;
+                            println!("INFO: Client disconnected with address: {client_addr:?}");
+                            break;
+                        }
+
 
                         let now = Instant::now();
-
                         let diff = match client.last_message {
                             Some(last) => now.duration_since(last),
                             None => MESSAGE_RATE * 2,
@@ -62,7 +69,7 @@ pub async fn client(
                             client.strike_count = 0;
                             let _ = client_tx.send(Message::NewMessage {
                                     author_addr: client_addr,
-                                    bytes: line.as_bytes().to_vec()
+                                    bytes: buf.clone()
                             });
                             client.last_message = Option::from(now);
                         } else {
