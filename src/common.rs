@@ -1,9 +1,9 @@
 use std::net::SocketAddr;
-use tokio::net::tcp::OwnedWriteHalf;
 
+#[derive(Clone)]
 pub enum Message {
     ClientConnected {
-        author: OwnedWriteHalf,
+        author_addr: SocketAddr,
     },
     ClientDisconnected {
         author_addr: SocketAddr,
