@@ -1,5 +1,4 @@
 mod client;
-mod common;
 
 use crate::client::client;
 use tokio::net::TcpListener;

@@ -1,8 +1,24 @@
-use crate::common::Message;
 use std::net::SocketAddr;
+use std::time::{Duration, SystemTime};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::broadcast::{Receiver, Sender};
+
+const MESSAGE_RATE: Duration = Duration::from_secs(1);
+const MAX_STRIKE_COUNT: usize = 6;
+
+#[derive(Clone)]
+pub enum Message {
+    NewMessage {
+        author_addr: SocketAddr,
+        bytes: Vec<u8>,
+    },
+}
+
+struct Client {
+    last_message: SystemTime,
+    strike_count: usize,
+}
 
 pub async fn client(
     stream: TcpStream,
@@ -10,11 +26,14 @@ pub async fn client(
     mut client_rx: Receiver<Message>,
     client_addr: SocketAddr,
 ) {
+    let mut client = Client {
+        last_message: SystemTime::now() - MESSAGE_RATE,
+        strike_count: 0,
+    };
+
     let (read_stream, mut write_stream) = stream.into_split();
 
-    let _ = client_tx.send(Message::ClientConnected {
-        author_addr: client_addr,
-    });
+    println!("INFO: A client connected with address: {client_addr:?}");
 
     let mut reader = BufReader::new(read_stream);
     let mut line = String::new();
@@ -31,10 +50,27 @@ pub async fn client(
                             break;
                         }
 
-                        let _ = client_tx.send(Message::NewMessage {
-                                author_addr: client_addr,
-                                bytes: line.as_bytes().to_vec()
-                        });
+
+                        let now = SystemTime::now();
+                        let diff = now.duration_since(client.last_message).expect("Clock may have gone backwards");
+
+                        if diff > MESSAGE_RATE {
+                            client.strike_count = 0;
+                            let _ = client_tx.send(Message::NewMessage {
+                                    author_addr: client_addr,
+                                    bytes: line.as_bytes().to_vec()
+                            });
+                            client.last_message = now;
+                        } else {
+                            client.strike_count += 1;
+                            if client.strike_count >= MAX_STRIKE_COUNT {
+                                let _ = write_stream.write_all(b"You are banned\n").await;
+                                break;
+                            }
+                            let bytes = std::format!("You are sending messages too fast, please slow down, {secs} secs left.\n", secs = (MESSAGE_RATE - diff).as_secs_f32()).into_bytes();
+                            let _ = write_stream.write_all(&bytes).await;
+                        }
+
                     },
                     Err(err) => {
                         eprintln!("ERROR: Failed to read from client stream, {err}");
@@ -48,12 +84,6 @@ pub async fn client(
                 match result {
                     Ok(msg) => {
                         match msg {
-                            Message::ClientConnected{author_addr} => {
-                                if client_addr == author_addr {
-                                    println!("INFO: A client connected with address: {author_addr:?}");
-                                }
-                            }
-
                             Message::NewMessage{author_addr, bytes} => {
                                 if client_addr != author_addr {
                                     match write_stream.write_all(&bytes).await {
