@@ -8,6 +8,7 @@ use tokio::sync::broadcast::{Receiver, Sender};
 
 const MESSAGE_RATE: Duration = Duration::from_secs(1);
 const MAX_STRIKE_COUNT: usize = 6;
+const BAN_LIMIT_IN_SECS: u64 = 60;
 
 #[derive(Clone)]
 pub enum Message {
@@ -51,7 +52,11 @@ fn is_banned(redis_conn: &mut redis::Connection, client_addr: &SocketAddr) -> bo
 
 fn ban_user(redis_conn: &mut redis::Connection, client_addr: &SocketAddr) {
     let _ = redis_conn
-        .set::<std::string::String, bool, ()>(format!("ban_user_{ip}", ip = client_addr.ip()), true)
+        .set_ex::<std::string::String, bool, ()>(
+            format!("ban_user_{ip}", ip = client_addr.ip()),
+            true,
+            BAN_LIMIT_IN_SECS,
+        )
         .map_err(|err| {
             eprintln!("ERROR: Unable to set redis ban key, {err}");
         });
