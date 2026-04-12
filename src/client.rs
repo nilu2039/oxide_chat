@@ -2,7 +2,6 @@ use crate::common::Message;
 use std::net::SocketAddr;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tokio::select;
 use tokio::sync::broadcast::{Receiver, Sender};
 
 pub async fn client(
@@ -23,13 +22,13 @@ pub async fn client(
     loop {
         line.clear();
 
-        select! {
+        tokio::select! {
             result = reader.read_line(&mut line) => {
                 match result {
                     Ok(n) => {
                         if n == 0 {
-                        println!("INFO: A client disconnected with address: {client_addr:?}");
-                        break;
+                            println!("INFO: A client disconnected with address: {client_addr:?}");
+                            break;
                         }
 
                         let _ = client_tx.send(Message::NewMessage {
