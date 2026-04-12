@@ -28,19 +28,19 @@ pub async fn client(
                 match result {
                     Ok(n) => {
                         if n == 0 {
-                            let _ = client_tx
-                                .send(Message::ClientDisconnected { author_addr: client_addr });
+                        println!("INFO: A client disconnected with address: {client_addr:?}");
+                        break;
                         }
 
                         let _ = client_tx.send(Message::NewMessage {
                                 author_addr: client_addr,
-                                bytes: line.clone().into(),
+                                bytes: line.as_bytes().to_vec()
                         });
                     },
                     Err(err) => {
                         eprintln!("ERROR: Failed to read from client stream, {err}");
-                        let _ = client_tx
-                            .send(Message::ClientDisconnected {  author_addr: client_addr });
+                        println!("INFO: A client disconnected with address: {client_addr:?}");
+                        break;
                     }
                 }
             }
@@ -52,13 +52,6 @@ pub async fn client(
                             Message::ClientConnected{author_addr} => {
                                 if client_addr == author_addr {
                                     println!("INFO: A client connected with address: {author_addr:?}");
-                                }
-                            }
-
-                            Message::ClientDisconnected{author_addr} => {
-                                if client_addr == author_addr {
-                                    println!("INFO: A client disconnected with address: {author_addr:?}");
-                                    break;
                                 }
                             }
 
@@ -83,46 +76,4 @@ pub async fn client(
             }
         }
     }
-
-    // let _ = messages
-    //     .send(Message::ClientConnected {
-    //         author: write_stream,
-    //     })
-    //     .await;
-    //
-    // let author_addr = match read_stream.as_ref().peer_addr() {
-    //     Ok(addr) => addr,
-    //     Err(err) => {
-    //         eprintln!("ERROR: Failed to get client peer address, {err}");
-    //         return;
-    //     }
-    // };
-    //
-    //
-    // loop {
-    //     let n = match reader.read_line(&mut line).await {
-    //         Ok(n) => n,
-    //         Err(err) => {
-    //             eprintln!("ERROR: Failed to read from client stream, {err}");
-    //             let _ = messages
-    //                 .send(Message::ClientDisconnected { author_addr })
-    //                 .await;
-    //             break;
-    //         }
-    //     };
-    //
-    //     if n == 0 {
-    //         let _ = messages
-    //             .send(Message::ClientDisconnected { author_addr })
-    //             .await;
-    //         break;
-    //     }
-    //
-    //     let _ = messages
-    //         .send(Message::NewMessage {
-    //             author_addr,
-    //             bytes: line.into(),
-    //         })
-    //         .await;
-    // }
 }

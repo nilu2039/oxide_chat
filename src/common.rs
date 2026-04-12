@@ -5,9 +5,6 @@ pub enum Message {
     ClientConnected {
         author_addr: SocketAddr,
     },
-    ClientDisconnected {
-        author_addr: SocketAddr,
-    },
     NewMessage {
         author_addr: SocketAddr,
         bytes: Vec<u8>,
