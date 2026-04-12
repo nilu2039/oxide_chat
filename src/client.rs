@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::broadcast::{Receiver, Sender};
@@ -16,7 +16,7 @@ pub enum Message {
 }
 
 struct Client {
-    last_message: SystemTime,
+    last_message: Option<Instant>,
     strike_count: usize,
 }
 
@@ -27,7 +27,7 @@ pub async fn client(
     client_addr: SocketAddr,
 ) {
     let mut client = Client {
-        last_message: SystemTime::now() - MESSAGE_RATE,
+        last_message: None,
         strike_count: 0,
     };
 
@@ -51,8 +51,12 @@ pub async fn client(
                         }
 
 
-                        let now = SystemTime::now();
-                        let diff = now.duration_since(client.last_message).expect("Clock may have gone backwards");
+                        let now = Instant::now();
+
+                        let diff = match client.last_message {
+                            Some(last) => now.duration_since(last),
+                            None => MESSAGE_RATE * 2,
+                        };
 
                         if diff > MESSAGE_RATE {
                             client.strike_count = 0;
@@ -60,7 +64,7 @@ pub async fn client(
                                     author_addr: client_addr,
                                     bytes: line.as_bytes().to_vec()
                             });
-                            client.last_message = now;
+                            client.last_message = Option::from(now);
                         } else {
                             client.strike_count += 1;
                             if client.strike_count >= MAX_STRIKE_COUNT {
