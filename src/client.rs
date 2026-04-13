@@ -35,7 +35,9 @@ async fn write_ban_msg_to_stream(write_stream: &mut OwnedWriteHalf, msg: Option<
         eprintln!("Write error: {e}");
         return;
     }
-    let _ = write_stream.shutdown().await;
+    if let Err(e) = write_stream.shutdown().await {
+        eprintln!("ERROR: shutdown error, {e}");
+    }
 }
 
 fn is_banned(redis_conn: &mut redis::Connection, client_addr: &SocketAddr) -> bool {
@@ -261,10 +263,12 @@ pub async fn client(
                         .await;
 
                         if !is_rate_limited {
-                            let _ = client_tx.send(Message::NewMessage {
+                            if let Err(e) = client_tx.send(Message::NewMessage {
                                     author_addr: client_addr,
                                     bytes: buf.clone()
-                            });
+                            }) {
+                                eprintln!("ERROR: NewMessage send error, {e}");
+                            };
                         } else {
                             if strike_count_exceed {
                                 break;
