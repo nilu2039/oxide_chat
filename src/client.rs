@@ -68,8 +68,65 @@ pub async fn client(
     mut client_rx: Receiver<Message>,
     client_addr: SocketAddr,
     redis_client: redis::Client,
+    valid_token_hex: String,
 ) {
-    let (read_stream, mut write_stream) = stream.into_split();
+    let (mut read_stream, mut write_stream) = stream.into_split();
+
+    let mut reader = BufReader::new(&mut read_stream);
+    let mut buf = Vec::new();
+
+    let _ = write_stream.write_all(b"Enter the security token\n").await;
+
+    let valid_token_bytes = match hex::decode(valid_token_hex) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("ERROR: Hex token decode error, {e}");
+            return;
+        }
+    };
+
+    loop {
+        buf.clear();
+
+        match reader.read_until(b'\n', &mut buf).await {
+            Ok(n) => {
+                if n == 0 {
+                    println!("INFO: A client disconnected with address: {client_addr:?}");
+                    return;
+                }
+
+                buf = buf
+                    .iter()
+                    .copied()
+                    .filter(|b| *b >= 32 && *b != 127)
+                    .collect();
+
+                let n = buf.len();
+
+                let token_hex = &buf[..n];
+
+                let token_bytes = match hex::decode(token_hex) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("ERROR: Hex token decode error, {e}");
+                        let _ = write_stream.write_all(b"Invalid token\n").await;
+                        continue;
+                    }
+                };
+
+                if token_bytes == valid_token_bytes {
+                    let _ = write_stream.write_all(b"Welcome!\n").await;
+                    break;
+                }
+
+                let _ = write_stream.write_all(b"Invalid token\n").await;
+            }
+            Err(err) => {
+                eprintln!("ERROR: Unable to read security token, {err}");
+                return;
+            }
+        };
+    }
 
     let mut redis_conn = redis_client
         .get_connection()
