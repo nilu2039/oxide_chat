@@ -50,16 +50,24 @@ fn is_banned(redis_conn: &mut redis::Connection, client_addr: &SocketAddr) -> bo
     return is_client_banned;
 }
 
-fn ban_user(redis_conn: &mut redis::Connection, client_addr: &SocketAddr) {
-    let _ = redis_conn
-        .set_ex::<std::string::String, bool, ()>(
-            format!("ban_user_{ip}", ip = client_addr.ip()),
-            true,
-            BAN_LIMIT_IN_SECS,
-        )
-        .map_err(|err| {
-            eprintln!("ERROR: Unable to set redis ban key, {err}");
-        });
+async fn ban_user(
+    redis_conn: &mut redis::Connection,
+    write_stream: &mut OwnedWriteHalf,
+    client_addr: &SocketAddr,
+    ban_msg: Option<&str>,
+) {
+    if let Err(e) = redis_conn.set_ex::<std::string::String, bool, ()>(
+        format!("ban_user_{ip}", ip = client_addr.ip()),
+        true,
+        BAN_LIMIT_IN_SECS,
+    ) {
+        eprintln!("ERROR: Unable to set redis ban key, {e}");
+        if let Err(e) = write_stream.write_all(b"Something went wrong\n").await {
+            eprintln!("ERROR: Tcp write fail, {e}");
+        }
+    } else {
+        write_ban_msg_to_stream(write_stream, ban_msg).await;
+    }
 }
 
 async fn handle_rate_limit(
@@ -87,8 +95,7 @@ async fn handle_rate_limit(
     } else {
         client.strike_count += 1;
         if client.strike_count >= MAX_STRIKE_COUNT {
-            ban_user(redis_conn, &client_addr);
-            write_ban_msg_to_stream(write_stream, None).await;
+            ban_user(redis_conn, write_stream, &client_addr, None).await;
             return (true, true);
         }
         let bytes = format!(
@@ -96,7 +103,9 @@ async fn handle_rate_limit(
             secs = secs_left.as_secs_f32()
         )
         .into_bytes();
-        let _ = write_stream.write_all(&bytes).await;
+        if let Err(e) = write_stream.write_all(&bytes).await {
+            eprintln!("ERROR: Tcp write fail, {e}");
+        }
         (true, false)
     }
 }
@@ -109,16 +118,20 @@ pub async fn client(
     redis_client: redis::Client,
     valid_token_hex: String,
 ) {
+    let mut redis_conn = match redis_client.get_connection() {
+        Ok(d) => d,
+        Err(err) => {
+            eprintln!("ERROR: Redis connection error, {err}");
+            return;
+        }
+    };
+
     let mut client = Client {
         last_message: None,
         strike_count: 0,
     };
 
     let (mut read_stream, mut write_stream) = stream.into_split();
-
-    let mut redis_conn = redis_client
-        .get_connection()
-        .expect("ERROR: Redis connection error");
 
     let is_client_banned = is_banned(&mut redis_conn, &client_addr);
 
@@ -130,7 +143,9 @@ pub async fn client(
     let mut reader = BufReader::new(&mut read_stream);
     let mut buf = Vec::new();
 
-    let _ = write_stream.write_all(b"Enter the security token\n").await;
+    if let Err(e) = write_stream.write_all(b"Enter the security token\n").await {
+        eprintln!("ERROR: Tcp write fail, {e}");
+    }
 
     let valid_token_bytes = match hex::decode(valid_token_hex) {
         Ok(t) => t,
@@ -180,17 +195,23 @@ pub async fn client(
                     Ok(t) => t,
                     Err(e) => {
                         eprintln!("ERROR: Hex token decode error, {e}");
-                        let _ = write_stream.write_all(b"Invalid token\n").await;
+                        if let Err(e) = write_stream.write_all(b"Invalid token\n").await {
+                            eprintln!("ERROR: Tcp write fail, {e}");
+                        }
                         continue;
                     }
                 };
 
                 if token_bytes == valid_token_bytes {
-                    let _ = write_stream.write_all(b"Welcome!\n").await;
+                    if let Err(e) = write_stream.write_all(b"Welcome!\n").await {
+                        eprintln!("ERROR: Tcp write fail, {e}");
+                    }
                     break;
                 }
 
-                let _ = write_stream.write_all(b"Invalid token\n").await;
+                if let Err(e) = write_stream.write_all(b"Invalid token\n").await {
+                    eprintln!("ERROR: Tcp write fail, {e}");
+                }
             }
             Err(err) => {
                 eprintln!("ERROR: Unable to read security token, {err}");
@@ -226,8 +247,7 @@ pub async fn client(
 
                         if !std::str::from_utf8(&buf[..n]).is_ok() {
                             eprintln!("ERROR: Stream did not contain valid UTF-8");
-                            ban_user(&mut redis_conn, &client_addr);
-                            write_ban_msg_to_stream(&mut write_stream, Option::from("Invalid UTF-8, you are banned\n")).await;
+                            ban_user(&mut redis_conn, &mut write_stream,&client_addr, Option::from("Invalid UTF-8, you are banned\n")).await;
                             println!("INFO: Client disconnected with address: {client_addr:?}");
                             break;
                         }
@@ -266,12 +286,9 @@ pub async fn client(
                         match msg {
                             Message::NewMessage{author_addr, bytes} => {
                                 if client_addr != author_addr {
-                                    match write_stream.write_all(&bytes).await {
-                                        Ok(()) => {},
-                                        Err(err) => {
-                                            eprintln!("ERROR: {err}");
-                                            break;
-                                        }
+                                    if let Err(e) = write_stream.write_all(&bytes).await {
+                                        eprintln!("ERROR: Tcp write fail, {e}");
+                                        break
                                     }
                                 }
                             }
