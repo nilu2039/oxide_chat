@@ -62,12 +62,12 @@ fn ban_user(redis_conn: &mut redis::Connection, client_addr: &SocketAddr) {
         });
 }
 
-async fn is_rate_limited(
+async fn handle_rate_limit(
     client: &mut Client,
     redis_conn: &mut redis::Connection,
     client_addr: &SocketAddr,
     write_stream: &mut OwnedWriteHalf,
-) -> (bool, bool, Duration) {
+) -> (bool, bool) {
     let now = Instant::now();
     let diff = match client.last_message {
         Some(last) => now.duration_since(last),
@@ -83,15 +83,21 @@ async fn is_rate_limited(
     if diff > MESSAGE_RATE {
         client.strike_count = 0;
         client.last_message = Option::from(now);
-        (false, false, secs_left)
+        (false, false)
     } else {
         client.strike_count += 1;
         if client.strike_count >= MAX_STRIKE_COUNT {
             ban_user(redis_conn, &client_addr);
             write_ban_msg_to_stream(write_stream, None).await;
-            return (true, true, secs_left);
+            return (true, true);
         }
-        (true, false, secs_left)
+        let bytes = format!(
+            "You are sending messages too fast, please slow down, {secs} secs left.\n",
+            secs = secs_left.as_secs_f32()
+        )
+        .into_bytes();
+        let _ = write_stream.write_all(&bytes).await;
+        (true, false)
     }
 }
 
@@ -103,7 +109,23 @@ pub async fn client(
     redis_client: redis::Client,
     valid_token_hex: String,
 ) {
+    let mut client = Client {
+        last_message: None,
+        strike_count: 0,
+    };
+
     let (mut read_stream, mut write_stream) = stream.into_split();
+
+    let mut redis_conn = redis_client
+        .get_connection()
+        .expect("ERROR: Redis connection error");
+
+    let is_client_banned = is_banned(&mut redis_conn, &client_addr);
+
+    if is_client_banned {
+        write_ban_msg_to_stream(&mut write_stream, None).await;
+        return;
+    }
 
     let mut reader = BufReader::new(&mut read_stream);
     let mut buf = Vec::new();
@@ -126,6 +148,22 @@ pub async fn client(
                 if n == 0 {
                     println!("INFO: A client disconnected with address: {client_addr:?}");
                     return;
+                }
+
+                let (is_rate_limited, strike_count_exceed) = handle_rate_limit(
+                    &mut client,
+                    &mut redis_conn,
+                    &client_addr,
+                    &mut write_stream,
+                )
+                .await;
+
+                if strike_count_exceed {
+                    return;
+                }
+
+                if is_rate_limited {
+                    continue;
                 }
 
                 buf = buf
@@ -161,22 +199,6 @@ pub async fn client(
         };
     }
 
-    let mut redis_conn = redis_client
-        .get_connection()
-        .expect("ERROR: Redis connection error");
-
-    let is_client_banned = is_banned(&mut redis_conn, &client_addr);
-
-    let mut client = Client {
-        last_message: None,
-        strike_count: 0,
-    };
-
-    if is_client_banned {
-        write_ban_msg_to_stream(&mut write_stream, None).await;
-        return;
-    }
-
     println!("INFO: A client connected with address: {client_addr:?}");
 
     let mut reader = BufReader::new(read_stream);
@@ -210,7 +232,13 @@ pub async fn client(
                             break;
                         }
 
-                        let (is_rate_limited, strike_count_exceed, secs_left) = is_rate_limited(&mut client, &mut redis_conn, &client_addr, &mut write_stream).await;
+                        let (is_rate_limited, strike_count_exceed) = handle_rate_limit(
+                            &mut client,
+                            &mut redis_conn,
+                            &client_addr,
+                            &mut write_stream,
+                        )
+                        .await;
 
                         if !is_rate_limited {
                             let _ = client_tx.send(Message::NewMessage {
@@ -221,8 +249,6 @@ pub async fn client(
                             if strike_count_exceed {
                                 break;
                             }
-                            let bytes = std::format!("You are sending messages too fast, please slow down, {secs} secs left.\n", secs = secs_left.as_secs_f32()).into_bytes();
-                            let _ = write_stream.write_all(&bytes).await;
                         }
 
                     },
