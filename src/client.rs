@@ -23,7 +23,7 @@ struct Client {
     strike_count: usize,
 }
 
-async fn write_ban_msg_to_stream(mut write_stream: OwnedWriteHalf, msg: Option<&str>) {
+async fn write_ban_msg_to_stream(write_stream: &mut OwnedWriteHalf, msg: Option<&str>) {
     println!("INFO: User is banned");
 
     let msg = match msg {
@@ -60,6 +60,39 @@ fn ban_user(redis_conn: &mut redis::Connection, client_addr: &SocketAddr) {
         .map_err(|err| {
             eprintln!("ERROR: Unable to set redis ban key, {err}");
         });
+}
+
+async fn is_rate_limited(
+    client: &mut Client,
+    redis_conn: &mut redis::Connection,
+    client_addr: &SocketAddr,
+    write_stream: &mut OwnedWriteHalf,
+) -> (bool, bool, Duration) {
+    let now = Instant::now();
+    let diff = match client.last_message {
+        Some(last) => now.duration_since(last),
+        None => MESSAGE_RATE * 2,
+    };
+
+    let secs_left = if MESSAGE_RATE > diff {
+        MESSAGE_RATE - diff
+    } else {
+        Duration::from_secs(0)
+    };
+
+    if diff > MESSAGE_RATE {
+        client.strike_count = 0;
+        client.last_message = Option::from(now);
+        (false, false, secs_left)
+    } else {
+        client.strike_count += 1;
+        if client.strike_count >= MAX_STRIKE_COUNT {
+            ban_user(redis_conn, &client_addr);
+            write_ban_msg_to_stream(write_stream, None).await;
+            return (true, true, secs_left);
+        }
+        (true, false, secs_left)
+    }
 }
 
 pub async fn client(
@@ -140,7 +173,7 @@ pub async fn client(
     };
 
     if is_client_banned {
-        write_ban_msg_to_stream(write_stream, None).await;
+        write_ban_msg_to_stream(&mut write_stream, None).await;
         return;
     }
 
@@ -172,33 +205,23 @@ pub async fn client(
                         if !std::str::from_utf8(&buf[..n]).is_ok() {
                             eprintln!("ERROR: Stream did not contain valid UTF-8");
                             ban_user(&mut redis_conn, &client_addr);
-                            write_ban_msg_to_stream(write_stream, Option::from("Invalid UTF-8, you are banned\n")).await;
+                            write_ban_msg_to_stream(&mut write_stream, Option::from("Invalid UTF-8, you are banned\n")).await;
                             println!("INFO: Client disconnected with address: {client_addr:?}");
                             break;
                         }
 
+                        let (is_rate_limited, strike_count_exceed, secs_left) = is_rate_limited(&mut client, &mut redis_conn, &client_addr, &mut write_stream).await;
 
-                        let now = Instant::now();
-                        let diff = match client.last_message {
-                            Some(last) => now.duration_since(last),
-                            None => MESSAGE_RATE * 2,
-                        };
-
-                        if diff > MESSAGE_RATE {
-                            client.strike_count = 0;
+                        if !is_rate_limited {
                             let _ = client_tx.send(Message::NewMessage {
                                     author_addr: client_addr,
                                     bytes: buf.clone()
                             });
-                            client.last_message = Option::from(now);
                         } else {
-                            client.strike_count += 1;
-                            if client.strike_count >= MAX_STRIKE_COUNT {
-                                ban_user(&mut redis_conn, &client_addr);
-                                write_ban_msg_to_stream(write_stream, None).await;
+                            if strike_count_exceed {
                                 break;
                             }
-                            let bytes = std::format!("You are sending messages too fast, please slow down, {secs} secs left.\n", secs = (MESSAGE_RATE - diff).as_secs_f32()).into_bytes();
+                            let bytes = std::format!("You are sending messages too fast, please slow down, {secs} secs left.\n", secs = secs_left.as_secs_f32()).into_bytes();
                             let _ = write_stream.write_all(&bytes).await;
                         }
 
