@@ -1,7 +1,7 @@
-mod client;
+mod server;
 extern crate redis;
 
-use crate::client::client;
+use crate::server::client;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast::channel;
 
