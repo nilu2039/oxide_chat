@@ -6,10 +6,10 @@ use tokio::net::TcpListener;
 use tokio::sync::broadcast::channel;
 
 const ADDRESS: &str = "0.0.0.0:8080";
+const REDIS_CLIENT_URL: &str = "redis://127.0.0.1:6379";
 
 async fn start() -> Result<(), std::io::Error> {
-    let redis_client =
-        redis::Client::open("redis://127.0.0.1:6379").expect("ERROR: Redis url check fail");
+    let redis_client = redis::Client::open(REDIS_CLIENT_URL).expect("ERROR: Redis url check fail");
 
     let listener = TcpListener::bind(ADDRESS).await?;
 
