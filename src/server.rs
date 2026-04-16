@@ -18,7 +18,7 @@ pub enum Message {
     },
 }
 
-struct Client {
+struct Connection {
     last_message: Option<Instant>,
     strike_count: usize,
 }
@@ -40,8 +40,8 @@ async fn write_ban_msg_to_stream(write_stream: &mut OwnedWriteHalf, msg: Option<
     }
 }
 
-fn is_banned(redis_conn: &mut redis::Connection, client_addr: &SocketAddr) -> bool {
-    let is_client_banned = match redis_conn.get(format!("ban_user_{ip}", ip = client_addr.ip())) {
+fn is_ip_banned(redis_conn: &mut redis::Connection, connection_addr: &SocketAddr) -> bool {
+    let is_ip_banned = match redis_conn.get(format!("ban_user_{ip}", ip = connection_addr.ip())) {
         Ok(b) => b,
         Err(err) => {
             eprintln!("ERROR: Unable to get banned user, {err}");
@@ -49,17 +49,17 @@ fn is_banned(redis_conn: &mut redis::Connection, client_addr: &SocketAddr) -> bo
         }
     };
 
-    return is_client_banned;
+    return is_ip_banned;
 }
 
 async fn ban_user(
     redis_conn: &mut redis::Connection,
     write_stream: &mut OwnedWriteHalf,
-    client_addr: &SocketAddr,
+    connection_addr: &SocketAddr,
     ban_msg: Option<&str>,
 ) {
     if let Err(e) = redis_conn.set_ex::<std::string::String, bool, ()>(
-        format!("ban_user_{ip}", ip = client_addr.ip()),
+        format!("ban_user_{ip}", ip = connection_addr.ip()),
         true,
         BAN_LIMIT_IN_SECS,
     ) {
@@ -73,13 +73,13 @@ async fn ban_user(
 }
 
 async fn handle_rate_limit(
-    client: &mut Client,
+    connection: &mut Connection,
     redis_conn: &mut redis::Connection,
-    client_addr: &SocketAddr,
+    connection_addr: &SocketAddr,
     write_stream: &mut OwnedWriteHalf,
 ) -> (bool, bool) {
     let now = Instant::now();
-    let diff = match client.last_message {
+    let diff = match connection.last_message {
         Some(last) => now.duration_since(last),
         None => MESSAGE_RATE * 2,
     };
@@ -91,13 +91,13 @@ async fn handle_rate_limit(
     };
 
     if diff > MESSAGE_RATE {
-        client.strike_count = 0;
-        client.last_message = Option::from(now);
+        connection.strike_count = 0;
+        connection.last_message = Option::from(now);
         (false, false)
     } else {
-        client.strike_count += 1;
-        if client.strike_count >= MAX_STRIKE_COUNT {
-            ban_user(redis_conn, write_stream, &client_addr, None).await;
+        connection.strike_count += 1;
+        if connection.strike_count >= MAX_STRIKE_COUNT {
+            ban_user(redis_conn, write_stream, &connection_addr, None).await;
             return (true, true);
         }
         let bytes = format!(
@@ -112,11 +112,11 @@ async fn handle_rate_limit(
     }
 }
 
-pub async fn client(
+pub async fn connection(
     stream: TcpStream,
-    client_tx: Sender<Message>,
-    mut client_rx: Receiver<Message>,
-    client_addr: SocketAddr,
+    connection_tx: Sender<Message>,
+    mut connection_rx: Receiver<Message>,
+    connection_addr: SocketAddr,
     redis_client: redis::Client,
     valid_token_hex: String,
 ) {
@@ -128,16 +128,16 @@ pub async fn client(
         }
     };
 
-    let mut client = Client {
+    let mut connection = Connection {
         last_message: None,
         strike_count: 0,
     };
 
     let (mut read_stream, mut write_stream) = stream.into_split();
 
-    let is_client_banned = is_banned(&mut redis_conn, &client_addr);
+    let is_ip_banned = is_ip_banned(&mut redis_conn, &connection_addr);
 
-    if is_client_banned {
+    if is_ip_banned {
         write_ban_msg_to_stream(&mut write_stream, None).await;
         return;
     }
@@ -163,14 +163,14 @@ pub async fn client(
         match reader.read_until(b'\n', &mut buf).await {
             Ok(n) => {
                 if n == 0 {
-                    println!("INFO: A client disconnected with address: {client_addr:?}");
+                    println!("INFO: A client disconnected with address: {connection_addr:?}");
                     return;
                 }
 
                 let (is_rate_limited, strike_count_exceed) = handle_rate_limit(
-                    &mut client,
+                    &mut connection,
                     &mut redis_conn,
-                    &client_addr,
+                    &connection_addr,
                     &mut write_stream,
                 )
                 .await;
@@ -222,7 +222,7 @@ pub async fn client(
         };
     }
 
-    println!("INFO: A client connected with address: {client_addr:?}");
+    println!("INFO: A client connected with address: {connection_addr:?}");
 
     let mut reader = BufReader::new(read_stream);
     let mut buf = Vec::new();
@@ -235,7 +235,7 @@ pub async fn client(
                 match result {
                     Ok(n) => {
                         if n == 0 {
-                            println!("INFO: A client disconnected with address: {client_addr:?}");
+                            println!("INFO: A client disconnected with address: {connection_addr:?}");
                             break;
                         }
 
@@ -249,22 +249,22 @@ pub async fn client(
 
                         if !std::str::from_utf8(&buf[..n]).is_ok() {
                             eprintln!("ERROR: Stream did not contain valid UTF-8");
-                            ban_user(&mut redis_conn, &mut write_stream,&client_addr, Option::from("Invalid UTF-8, you are banned\n")).await;
-                            println!("INFO: Client disconnected with address: {client_addr:?}");
+                            ban_user(&mut redis_conn, &mut write_stream,&connection_addr, Option::from("Invalid UTF-8, you are banned\n")).await;
+                            println!("INFO: Client disconnected with address: {connection_addr:?}");
                             break;
                         }
 
                         let (is_rate_limited, strike_count_exceed) = handle_rate_limit(
-                            &mut client,
+                            &mut connection,
                             &mut redis_conn,
-                            &client_addr,
+                            &connection_addr,
                             &mut write_stream,
                         )
                         .await;
 
                         if !is_rate_limited {
-                            if let Err(e) = client_tx.send(Message::NewMessage {
-                                    author_addr: client_addr,
+                            if let Err(e) = connection_tx.send(Message::NewMessage {
+                                    author_addr: connection_addr,
                                     bytes: buf.clone()
                             }) {
                                 eprintln!("ERROR: NewMessage send error, {e}");
@@ -278,18 +278,18 @@ pub async fn client(
                     },
                     Err(err) => {
                         eprintln!("ERROR: Failed to read from client stream, {err}");
-                        println!("INFO: A client disconnected with address: {client_addr:?}");
+                        println!("INFO: A client disconnected with address: {connection_addr:?}");
                         break;
                     }
                 }
             }
 
-            result = client_rx.recv() => {
+            result = connection_rx.recv() => {
                 match result {
                     Ok(msg) => {
                         match msg {
                             Message::NewMessage{author_addr, bytes} => {
-                                if client_addr != author_addr {
+                                if connection_addr != author_addr {
                                     if let Err(e) = write_stream.write_all(&bytes).await {
                                         eprintln!("ERROR: Tcp write fail, {e}");
                                         break

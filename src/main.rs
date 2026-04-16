@@ -1,7 +1,7 @@
 mod server;
 extern crate redis;
 
-use crate::server::client;
+use crate::server::connection;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast::channel;
 
@@ -13,7 +13,7 @@ async fn start() -> Result<(), std::io::Error> {
 
     let listener = TcpListener::bind(ADDRESS).await?;
 
-    let (client_tx, _) = channel(16);
+    let (connection_tx, _) = channel(16);
 
     let mut token_buf = [0u8; 16];
     if let Err(err) = getrandom::fill(&mut token_buf) {
@@ -25,14 +25,14 @@ async fn start() -> Result<(), std::io::Error> {
 
     loop {
         let (stream, addr) = listener.accept().await?;
-        let client_tx = client_tx.clone();
-        let client_rx = client_tx.subscribe();
+        let connection_tx = connection_tx.clone();
+        let connection_rx = connection_tx.subscribe();
         let redis_client = redis_client.clone();
         let token_hex = token_hex.clone();
-        tokio::spawn(client(
+        tokio::spawn(connection(
             stream,
-            client_tx,
-            client_rx,
+            connection_tx,
+            connection_rx,
             addr,
             redis_client,
             token_hex,
