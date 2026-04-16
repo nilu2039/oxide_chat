@@ -6,9 +6,17 @@ use tokio::net::TcpStream;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::broadcast::{Receiver, Sender};
 
+extern crate redis;
+
+use tokio::net::TcpListener;
+use tokio::sync::broadcast::channel;
+
 const MESSAGE_RATE: Duration = Duration::from_secs(1);
 const MAX_STRIKE_COUNT: usize = 6;
 const BAN_LIMIT_IN_SECS: u64 = 60;
+
+const ADDRESS: &str = "0.0.0.0:8080";
+const REDIS_CLIENT_URL: &str = "redis://127.0.0.1:6379";
 
 #[derive(Clone)]
 pub enum Message {
@@ -21,6 +29,47 @@ pub enum Message {
 struct Connection {
     last_message: Option<Instant>,
     strike_count: usize,
+}
+
+async fn start() -> Result<(), std::io::Error> {
+    let redis_client = redis::Client::open(REDIS_CLIENT_URL).expect("ERROR: Redis url check fail");
+
+    let listener = TcpListener::bind(ADDRESS).await?;
+
+    let (connection_tx, _) = channel(16);
+
+    let mut token_buf = [0u8; 16];
+    if let Err(err) = getrandom::fill(&mut token_buf) {
+        eprintln!("ERROR: Failed to generate random token, {err}")
+    }
+
+    let token_hex = hex::encode(token_buf);
+    println!("Secret access token: {token_hex}");
+
+    loop {
+        let (stream, addr) = listener.accept().await?;
+        let connection_tx = connection_tx.clone();
+        let connection_rx = connection_tx.subscribe();
+        let redis_client = redis_client.clone();
+        let token_hex = token_hex.clone();
+        tokio::spawn(connection(
+            stream,
+            connection_tx,
+            connection_rx,
+            addr,
+            redis_client,
+            token_hex,
+        ));
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    match start().await {
+        Ok(_) => {}
+        Err(e) => eprintln!("{:?}", e),
+    };
+    Ok(())
 }
 
 async fn write_ban_msg_to_stream(write_stream: &mut OwnedWriteHalf, msg: Option<&str>) {
