@@ -1,3 +1,142 @@
-fn main() {
-    println!("CLIENT");
+use std::vec;
+
+use eframe::egui::{self, Color32, Context, RichText, TextStyle};
+use rand::rng;
+use rand::seq::IndexedRandom;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
+use tokio::sync::mpsc::{Receiver, Sender, channel};
+
+async fn handle_tcp_connection(ctx: Context, tx_in: Sender<String>, mut rx_out: Receiver<String>) {
+    let stream = TcpStream::connect("127.0.0.1:8080").await.unwrap();
+    let (read_stream, mut write_stream) = stream.into_split();
+    let mut reader = BufReader::new(read_stream);
+    let mut buf = Vec::new();
+
+    tokio::spawn(async move {
+        while let Some(msg) = rx_out.recv().await {
+            println!("RX OUT MESSAGE, {msg}");
+            if let Err(e) = write_stream.write_all(format!("{msg}\n").as_bytes()).await {
+                eprintln!("ERROR: {e}")
+            };
+        }
+    });
+
+    loop {
+        buf.clear();
+
+        match reader.read_until(b'\n', &mut buf).await {
+            Ok(n) => {
+                if n == 0 {
+                    return;
+                }
+                let line = &buf[..n];
+                let str = std::str::from_utf8(&line)
+                    .unwrap()
+                    .trim_end_matches('\n')
+                    .to_string();
+                if let Err(e) = tx_in.send(str).await {
+                    eprint!("ERROR: {e}");
+                };
+                ctx.request_repaint();
+            }
+            Err(_err) => {
+                return;
+            }
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() -> eframe::Result {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 720.0]),
+        ..Default::default()
+    };
+
+    let (tx_in, rx_in) = channel(100);
+    let (tx_out, rx_out) = channel(100);
+
+    eframe::run_native(
+        "Oxide chat client",
+        options,
+        Box::new(|cc| {
+            let ctx = cc.egui_ctx.clone();
+            tokio::spawn(handle_tcp_connection(ctx, tx_in, rx_out));
+            Ok(Box::new(App {
+                messages: vec![],
+                rx_in,
+                tx_out,
+                out_message: String::new(),
+            }))
+        }),
+    )
+}
+
+struct Message {
+    text: String,
+    color: Color32,
+}
+
+struct App {
+    messages: Vec<Message>,
+    rx_in: Receiver<String>,
+    tx_out: Sender<String>,
+    out_message: String,
+}
+
+const COLORS: [Color32; 3] = [
+    egui::Color32::RED,
+    egui::Color32::GREEN,
+    egui::Color32::BLUE,
+];
+
+impl eframe::App for App {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let mut rng = rng();
+
+        while let Ok(text) = self.rx_in.try_recv() {
+            self.messages.push(Message {
+                text,
+                color: *COLORS.choose(&mut rng).unwrap(),
+            });
+        }
+
+        egui::CentralPanel::default().show_inside(ui, |ui| {
+            ui.heading(RichText::new("Oxide Chat").color(egui::Color32::RED));
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                for msg in &self.messages {
+                    ui.heading(
+                        RichText::new(&msg.text)
+                            .color(msg.color)
+                            .text_style(TextStyle::Monospace),
+                    );
+                    ui.add_space(5.0);
+                }
+            });
+
+            let input_id = ui.make_persistent_id("chat_input");
+
+            egui::Panel::bottom("input_label").show_inside(ui, |ui| {
+                let response = ui.add_sized(
+                    ui.available_size(),
+                    egui::TextEdit::singleline(&mut self.out_message).id(input_id),
+                );
+                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    if !self.out_message.is_empty() {
+                        self.messages.push(Message {
+                            text: self.out_message.clone(),
+                            color: Color32::GREEN,
+                        });
+                        if let Err(e) = self.tx_out.try_send(self.out_message.clone()) {
+                            eprintln!("ERROR: {e}");
+                        };
+                        self.out_message.clear();
+                        ui.memory_mut(|m| m.request_focus(input_id))
+                    }
+                }
+            });
+        });
+    }
 }
