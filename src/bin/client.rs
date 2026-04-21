@@ -171,7 +171,7 @@ impl eframe::App for App {
 
                             ui.label(
                                 RichText::new(&msg.text)
-                                    .color(msg.color)
+                                    .color(Color32::WHITE)
                                     .text_style(TextStyle::Monospace),
                             );
                         });
