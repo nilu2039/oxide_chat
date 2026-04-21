@@ -88,7 +88,7 @@ struct App {
 const COLORS: [Color32; 3] = [
     egui::Color32::RED,
     egui::Color32::GREEN,
-    egui::Color32::BLUE,
+    egui::Color32::ORANGE,
 ];
 
 impl eframe::App for App {
