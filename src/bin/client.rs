@@ -1,13 +1,18 @@
-use std::vec;
+use oxide_chat::ResponseMsg;
 
 use eframe::egui::{self, Color32, Context, RichText, TextStyle};
 use rand::rng;
 use rand::seq::IndexedRandom;
+use std::vec;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 
-async fn handle_tcp_connection(ctx: Context, tx_in: Sender<String>, mut rx_out: Receiver<String>) {
+async fn handle_tcp_connection(
+    ctx: Context,
+    tx_in: Sender<ResponseMsg>,
+    mut rx_out: Receiver<String>,
+) {
     let stream = TcpStream::connect("127.0.0.1:8080").await.unwrap();
     let (read_stream, mut write_stream) = stream.into_split();
     let mut reader = BufReader::new(read_stream);
@@ -31,13 +36,14 @@ async fn handle_tcp_connection(ctx: Context, tx_in: Sender<String>, mut rx_out: 
                     return;
                 }
                 let line = &buf[..n];
-                let str = std::str::from_utf8(&line)
-                    .unwrap()
-                    .trim_end_matches('\n')
-                    .to_string();
-                if let Err(e) = tx_in.send(str).await {
-                    eprint!("ERROR: {e}");
+                let json_str = std::str::from_utf8(&line).unwrap();
+
+                let parsed_json_res: ResponseMsg = serde_json::from_str(json_str).unwrap();
+
+                if let Err(e) = tx_in.send(parsed_json_res).await {
+                    eprintln!("ERROR: {e}");
                 };
+
                 ctx.request_repaint();
             }
             Err(_err) => {
@@ -80,7 +86,7 @@ struct Message {
 
 struct App {
     messages: Vec<Message>,
-    rx_in: Receiver<String>,
+    rx_in: Receiver<ResponseMsg>,
     tx_out: Sender<String>,
     out_message: String,
 }
@@ -95,7 +101,31 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let mut rng = rng();
 
-        while let Ok(text) = self.rx_in.try_recv() {
+        while let Ok(msg) = self.rx_in.try_recv() {
+            let mut text = String::new();
+            match msg {
+                ResponseMsg {
+                    data: Some(msg), ..
+                } => {
+                    text = format!(
+                        "{username}: {text}",
+                        username = msg.username,
+                        text = msg.text.trim_end_matches('\n').to_string()
+                    );
+                }
+                ResponseMsg {
+                    info_msg: Some(info),
+                    ..
+                } => {
+                    text = info.trim_end_matches('\n').to_string();
+                }
+                ResponseMsg {
+                    err_msg: Some(err), ..
+                } => {
+                    text = err.trim_end_matches('\n').to_string();
+                }
+                _ => {}
+            };
             self.messages.push(Message {
                 text,
                 color: *COLORS.choose(&mut rng).unwrap(),

@@ -2,15 +2,15 @@ use serde::{Deserialize, Serialize};
 
 pub mod server;
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Message {
-    username: String,
-    text: String,
+    pub username: String,
+    pub text: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct ResponseMsg {
-    data: Option<Message>,
-    info_msg: Option<String>,
-    err_msg: Option<String>,
+    pub data: Option<Message>,
+    pub info_msg: Option<String>,
+    pub err_msg: Option<String>,
 }
