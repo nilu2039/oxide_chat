@@ -20,7 +20,6 @@ async fn handle_tcp_connection(
 
     tokio::spawn(async move {
         while let Some(msg) = rx_out.recv().await {
-            println!("RX OUT MESSAGE, {msg}");
             if let Err(e) = write_stream.write_all(format!("{msg}\n").as_bytes()).await {
                 eprintln!("ERROR: {e}")
             };
@@ -138,7 +137,7 @@ impl eframe::App for App {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 for msg in &self.messages {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         if let Some(username) = &msg.username {
                             ui.label(
                                 RichText::new(format!("{username}: "))
