@@ -152,28 +152,30 @@ impl eframe::App for App {
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.heading(RichText::new("Oxide Chat").color(egui::Color32::RED));
             ui.add_space(10.0);
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                for msg in &self.messages {
-                    ui.horizontal_wrapped(|ui| {
-                        if let Some(username) = &msg.username {
-                            ui.label(
-                                RichText::new(format!("{username}: "))
-                                    .color(msg.color)
-                                    .text_style(TextStyle::Heading),
-                            );
-                            ui.add_space(2.0);
-                        };
+            egui::ScrollArea::vertical()
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    for msg in &self.messages {
+                        ui.horizontal_wrapped(|ui| {
+                            if let Some(username) = &msg.username {
+                                ui.label(
+                                    RichText::new(format!("{username}: "))
+                                        .color(msg.color)
+                                        .text_style(TextStyle::Heading),
+                                );
+                                ui.add_space(2.0);
+                            };
 
-                        ui.label(
-                            RichText::new(&msg.text)
-                                .color(msg.color)
-                                .text_style(TextStyle::Monospace),
-                        );
-                    });
-                    ui.add_space(5.0);
-                }
-            });
+                            ui.label(
+                                RichText::new(&msg.text)
+                                    .color(msg.color)
+                                    .text_style(TextStyle::Monospace),
+                            );
+                        });
+                        ui.add_space(5.0);
+                    }
+                });
         });
     }
 }
