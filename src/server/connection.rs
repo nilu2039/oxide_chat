@@ -14,15 +14,20 @@ const MESSAGE_RATE: Duration = Duration::from_secs(1);
 const MAX_STRIKE_COUNT: usize = 6;
 const BAN_LIMIT_IN_SECS: u64 = 60;
 
+#[derive(Serialize, Clone)]
+pub struct Message {
+    username: String,
+    text: String,
+}
+
 #[derive(Clone)]
-pub enum Message {
-    NewMessage { username: String, text: String },
+pub enum AuthorMsg {
+    SendMessage(Message),
 }
 
 #[derive(Serialize)]
 pub struct ResponseMsg {
-    username: String,
-    text: String,
+    data: Message,
 }
 
 struct Connection {
@@ -129,8 +134,8 @@ pub async fn handle_client_disconnect(
 
 pub async fn connection(
     stream: TcpStream,
-    connection_tx: Sender<Message>,
-    mut connection_rx: Receiver<Message>,
+    connection_tx: Sender<AuthorMsg>,
+    mut connection_rx: Receiver<AuthorMsg>,
     connection_addr: SocketAddr,
     redis_client: redis::Client,
     valid_token_hex: String,
@@ -335,10 +340,10 @@ pub async fn connection(
 
                             if !is_rate_limited {
                                 if let Some(username) = active_connections.get(&connection_addr) {
-                                    if let Err(e) = connection_tx.send(Message::NewMessage {
+                                    if let Err(e) = connection_tx.send(AuthorMsg::SendMessage(Message{
                                             text : text.to_string(),
                                             username: username.clone()
-                                    }) {
+                                    })) {
                                         eprintln!("ERROR: NewMessage send error, {e}");
                                     };
                                 }
@@ -373,10 +378,12 @@ pub async fn connection(
                 match result {
                     Ok(msg) => {
                         match msg {
-                            Message::NewMessage{text, username} => {
+                            AuthorMsg::SendMessage(author_msg) => {
                                 let res_msg = ResponseMsg {
-                                    username: username.clone(),
-                                    text: text.clone(),
+                                    data: Message {
+                                        username: author_msg.username.clone(),
+                                        text: author_msg.text.clone(),
+                                    }
                                 };
                                 if let Ok(mut json_str) = serde_json::to_string(&res_msg) {
                                     json_str.push('\n');
