@@ -250,26 +250,26 @@ pub async fn connection(
                         let n = buf.len();
 
                         if let Ok(text) = std::str::from_utf8(&buf[..n]) {
-                        let (is_rate_limited, strike_count_exceed) = handle_rate_limit(
-                            &mut connection,
-                            &mut redis_conn,
-                            &connection_addr,
-                            &mut write_stream,
-                        )
-                        .await;
+                            let (is_rate_limited, strike_count_exceed) = handle_rate_limit(
+                                &mut connection,
+                                &mut redis_conn,
+                                &connection_addr,
+                                &mut write_stream,
+                            )
+                            .await;
 
-                        if !is_rate_limited {
-                            if let Err(e) = connection_tx.send(Message::NewMessage {
-                                    author_addr: connection_addr,
-                                    text : text.to_string()
-                            }) {
-                                eprintln!("ERROR: NewMessage send error, {e}");
-                            };
-                        } else {
-                            if strike_count_exceed {
-                                break;
+                            if !is_rate_limited {
+                                if let Err(e) = connection_tx.send(Message::NewMessage {
+                                        author_addr: connection_addr,
+                                        text : text.to_string()
+                                }) {
+                                    eprintln!("ERROR: NewMessage send error, {e}");
+                                };
+                            } else {
+                                if strike_count_exceed {
+                                    break;
+                                }
                             }
-                        }
                         } else {
                             eprintln!("ERROR: Stream did not contain valid UTF-8");
                             ban_user(&mut redis_conn, &mut write_stream,&connection_addr, Option::from("Invalid UTF-8, you are banned\n")).await;
