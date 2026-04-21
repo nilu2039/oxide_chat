@@ -16,7 +16,7 @@ const BAN_LIMIT_IN_SECS: u64 = 60;
 pub enum Message {
     NewMessage {
         author_addr: SocketAddr,
-        bytes: Vec<u8>,
+        text: String,
     },
 }
 
@@ -249,13 +249,7 @@ pub async fn connection(
                         buf.push(b'\n');
                         let n = buf.len();
 
-                        if !std::str::from_utf8(&buf[..n]).is_ok() {
-                            eprintln!("ERROR: Stream did not contain valid UTF-8");
-                            ban_user(&mut redis_conn, &mut write_stream,&connection_addr, Option::from("Invalid UTF-8, you are banned\n")).await;
-                            println!("INFO: Client disconnected with address: {connection_addr:?}");
-                            break;
-                        }
-
+                        if let Ok(text) = std::str::from_utf8(&buf[..n]) {
                         let (is_rate_limited, strike_count_exceed) = handle_rate_limit(
                             &mut connection,
                             &mut redis_conn,
@@ -267,7 +261,7 @@ pub async fn connection(
                         if !is_rate_limited {
                             if let Err(e) = connection_tx.send(Message::NewMessage {
                                     author_addr: connection_addr,
-                                    bytes: buf.clone()
+                                    text : text.to_string()
                             }) {
                                 eprintln!("ERROR: NewMessage send error, {e}");
                             };
@@ -276,7 +270,13 @@ pub async fn connection(
                                 break;
                             }
                         }
+                        } else {
+                            eprintln!("ERROR: Stream did not contain valid UTF-8");
+                            ban_user(&mut redis_conn, &mut write_stream,&connection_addr, Option::from("Invalid UTF-8, you are banned\n")).await;
+                            println!("INFO: Client disconnected with address: {connection_addr:?}");
+                            break;
 
+                        }
                     },
                     Err(err) => {
                         eprintln!("ERROR: Failed to read from client stream, {err}");
@@ -290,9 +290,9 @@ pub async fn connection(
                 match result {
                     Ok(msg) => {
                         match msg {
-                            Message::NewMessage{author_addr, bytes} => {
+                            Message::NewMessage{author_addr, text} => {
                                 if connection_addr != author_addr {
-                                    if let Err(e) = write_stream.write_all(&bytes).await {
+                                    if let Err(e) = write_stream.write_all(text.as_bytes()).await {
                                         eprintln!("ERROR: Tcp write fail, {e}");
                                         break
                                     }

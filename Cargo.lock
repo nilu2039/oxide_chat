@@ -2287,6 +2287,7 @@ dependencies = [
  "hex",
  "rand",
  "redis",
+ "serde",
  "tokio",
 ]
 
