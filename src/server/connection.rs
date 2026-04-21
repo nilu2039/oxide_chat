@@ -1,3 +1,5 @@
+use crate::Message;
+
 use redis::Commands;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -13,12 +15,6 @@ extern crate redis;
 const MESSAGE_RATE: Duration = Duration::from_secs(1);
 const MAX_STRIKE_COUNT: usize = 6;
 const BAN_LIMIT_IN_SECS: u64 = 60;
-
-#[derive(Serialize, Clone)]
-pub struct Message {
-    username: String,
-    text: String,
-}
 
 #[derive(Clone)]
 pub enum AuthorMsg {
