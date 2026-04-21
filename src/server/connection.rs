@@ -1,7 +1,6 @@
-use crate::Message;
+use crate::{Message, ResponseMsg};
 
 use redis::Commands;
-use serde::Serialize;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -21,13 +20,6 @@ pub enum AuthorMsg {
     SendMessage(Message),
     SendInfo(String),
     SendError(String),
-}
-
-#[derive(Serialize)]
-pub struct ResponseMsg {
-    data: Option<Message>,
-    info_msg: Option<String>,
-    err_msg: Option<String>,
 }
 
 struct Connection {
