@@ -131,6 +131,24 @@ impl eframe::App for App {
             });
         }
 
+        let input_id = ui.make_persistent_id("chat_input");
+
+        egui::Panel::bottom("input_label").show_inside(ui, |ui| {
+            let response = ui.add_sized(
+                ui.available_size(),
+                egui::TextEdit::singleline(&mut self.out_message).id(input_id),
+            );
+            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                if !self.out_message.is_empty() {
+                    if let Err(e) = self.tx_out.try_send(self.out_message.clone()) {
+                        eprintln!("ERROR: {e}");
+                    };
+                    self.out_message.clear();
+                    ui.memory_mut(|m| m.request_focus(input_id))
+                }
+            }
+        });
+
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.heading(RichText::new("Oxide Chat").color(egui::Color32::RED));
             ui.add_space(10.0);
@@ -154,24 +172,6 @@ impl eframe::App for App {
                         );
                     });
                     ui.add_space(5.0);
-                }
-            });
-
-            let input_id = ui.make_persistent_id("chat_input");
-
-            egui::Panel::bottom("input_label").show_inside(ui, |ui| {
-                let response = ui.add_sized(
-                    ui.available_size(),
-                    egui::TextEdit::singleline(&mut self.out_message).id(input_id),
-                );
-                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    if !self.out_message.is_empty() {
-                        if let Err(e) = self.tx_out.try_send(self.out_message.clone()) {
-                            eprintln!("ERROR: {e}");
-                        };
-                        self.out_message.clear();
-                        ui.memory_mut(|m| m.request_focus(input_id))
-                    }
                 }
             });
         });
