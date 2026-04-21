@@ -23,16 +23,67 @@ pub struct Message {
 #[derive(Clone)]
 pub enum AuthorMsg {
     SendMessage(Message),
+    SendInfo(String),
+    SendError(String),
 }
 
 #[derive(Serialize)]
 pub struct ResponseMsg {
-    data: Message,
+    data: Option<Message>,
+    info_msg: Option<String>,
+    err_msg: Option<String>,
 }
 
 struct Connection {
     last_message: Option<Instant>,
     strike_count: usize,
+}
+
+async fn send_response(
+    write_stream: &mut OwnedWriteHalf,
+    author_msg: AuthorMsg,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match author_msg {
+        AuthorMsg::SendMessage(author_msg) => {
+            let res_msg = ResponseMsg {
+                data: Option::from(Message {
+                    username: author_msg.username.clone(),
+                    text: author_msg.text.clone(),
+                }),
+                err_msg: None,
+                info_msg: None,
+            };
+            if let Ok(mut json_str) = serde_json::to_string(&res_msg) {
+                json_str.push('\n');
+                write_stream.write_all(json_str.as_bytes()).await?;
+            }
+            Ok(())
+        }
+        AuthorMsg::SendInfo(msg) => {
+            let res_msg = ResponseMsg {
+                data: None,
+                info_msg: Option::from(msg),
+                err_msg: None,
+            };
+            if let Ok(mut json_str) = serde_json::to_string(&res_msg) {
+                json_str.push('\n');
+                write_stream.write_all(json_str.as_bytes()).await?
+            }
+            Ok(())
+        }
+        AuthorMsg::SendError(msg) => {
+            let res_msg = ResponseMsg {
+                data: None,
+                info_msg: None,
+                err_msg: Option::from(msg),
+            };
+            if let Ok(mut json_str) = serde_json::to_string(&res_msg) {
+                json_str.push('\n');
+                write_stream.write_all(json_str.as_bytes()).await?
+            }
+            Ok(())
+        }
+    }
 }
 
 async fn write_ban_msg_to_stream(write_stream: &mut OwnedWriteHalf, msg: Option<&str>) {
@@ -43,10 +94,11 @@ async fn write_ban_msg_to_stream(write_stream: &mut OwnedWriteHalf, msg: Option<
         None => "You are banned\n",
     };
 
-    if let Err(e) = write_stream.write_all(msg.as_bytes()).await {
-        eprintln!("Write error: {e}");
+    if let Err(e) = send_response(write_stream, AuthorMsg::SendInfo(msg.to_string())).await {
+        eprintln!("ERROR: {e}");
         return;
     }
+
     if let Err(e) = write_stream.shutdown().await {
         eprintln!("ERROR: shutdown error, {e}");
     }
@@ -76,8 +128,13 @@ async fn ban_user(
         BAN_LIMIT_IN_SECS,
     ) {
         eprintln!("ERROR: Unable to set redis ban key, {e}");
-        if let Err(e) = write_stream.write_all(b"Something went wrong\n").await {
-            eprintln!("ERROR: Tcp write fail, {e}");
+        if let Err(e) = send_response(
+            write_stream,
+            AuthorMsg::SendError("Something went wrong\n".to_string()),
+        )
+        .await
+        {
+            eprintln!("ERROR: {e}");
         }
     } else {
         write_ban_msg_to_stream(write_stream, ban_msg).await;
@@ -112,14 +169,16 @@ async fn handle_rate_limit(
             ban_user(redis_conn, write_stream, &connection_addr, None).await;
             return (true, true);
         }
-        let bytes = format!(
+        let msg = format!(
             "You are sending messages too fast, please slow down, {secs} secs left.\n",
             secs = secs_left.as_secs_f32()
         )
-        .into_bytes();
-        if let Err(e) = write_stream.write_all(&bytes).await {
-            eprintln!("ERROR: Tcp write fail, {e}");
+        .to_string();
+
+        if let Err(e) = send_response(write_stream, AuthorMsg::SendInfo(msg)).await {
+            eprintln!("ERROR: {e}");
         }
+
         (true, false)
     }
 }
@@ -167,8 +226,13 @@ pub async fn connection(
     let mut reader = BufReader::new(&mut read_stream);
     let mut buf = Vec::new();
 
-    if let Err(e) = write_stream.write_all(b"Enter the security token\n").await {
-        eprintln!("ERROR: Tcp write fail, {e}");
+    if let Err(e) = send_response(
+        &mut write_stream,
+        AuthorMsg::SendInfo("Enter the security token\n".to_string()),
+    )
+    .await
+    {
+        eprintln!("ERROR: {e}");
     }
 
     let valid_token_bytes = match hex::decode(valid_token_hex) {
@@ -219,25 +283,37 @@ pub async fn connection(
                     Ok(t) => t,
                     Err(e) => {
                         eprintln!("ERROR: Hex token decode error, {e}");
-                        if let Err(e) = write_stream.write_all(b"Invalid token\n").await {
-                            eprintln!("ERROR: Tcp write fail, {e}");
+                        if let Err(e) = send_response(
+                            &mut write_stream,
+                            AuthorMsg::SendInfo("Invalid token\n".to_string()),
+                        )
+                        .await
+                        {
+                            eprintln!("ERROR: {e}");
                         }
                         continue;
                     }
                 };
 
                 if token_bytes == valid_token_bytes {
-                    if let Err(e) = write_stream
-                        .write_all(b"Welcome, please enter an username!\n")
-                        .await
+                    if let Err(e) = send_response(
+                        &mut write_stream,
+                        AuthorMsg::SendInfo("Welcome, please enter an username!\n".to_string()),
+                    )
+                    .await
                     {
-                        eprintln!("ERROR: Tcp write fail, {e}");
+                        eprintln!("ERROR: {e}");
                     }
                     break;
                 }
 
-                if let Err(e) = write_stream.write_all(b"Invalid token\n").await {
-                    eprintln!("ERROR: Tcp write fail, {e}");
+                if let Err(e) = send_response(
+                    &mut write_stream,
+                    AuthorMsg::SendInfo("Invalid token\n".to_string()),
+                )
+                .await
+                {
+                    eprintln!("ERROR: {e}");
                 }
             }
             Err(err) => {
@@ -283,18 +359,24 @@ pub async fn connection(
 
                 if let Ok(username) = std::str::from_utf8(&buf[..n]) {
                     active_connections.insert(connection_addr, username.to_string());
-                    if let Err(e) = write_stream
-                        .write_all(format!("Welcome {username}!\n").as_bytes())
-                        .await
+                    if let Err(e) = send_response(
+                        &mut write_stream,
+                        AuthorMsg::SendInfo(format!("Welcome {username}!\n").to_string()),
+                    )
+                    .await
                     {
-                        eprintln!("ERROR: Tcp write fail, {e}");
-                        return;
+                        eprintln!("ERROR: {e}");
                     }
                     break;
                 } else {
                     eprintln!("ERROR: Invalid UTF-8 username");
-                    if let Err(e) = write_stream.write_all(b"Invalid username format\n").await {
-                        eprintln!("ERROR: {e}")
+                    if let Err(e) = send_response(
+                        &mut write_stream,
+                        AuthorMsg::SendError("Invalid username format\n".to_string()),
+                    )
+                    .await
+                    {
+                        eprintln!("ERROR: {e}");
                     }
                 }
             }
@@ -354,7 +436,12 @@ pub async fn connection(
                             }
                         } else {
                             eprintln!("ERROR: Stream did not contain valid UTF-8");
-                            ban_user(&mut redis_conn, &mut write_stream,&connection_addr, Option::from("Invalid UTF-8, you are banned\n")).await;
+
+                            ban_user(&mut redis_conn,
+                                &mut write_stream,&connection_addr,
+                                Option::from("Invalid UTF-8, you are banned\n"),
+                                ).await;
+
                             handle_client_disconnect(
                                 &connection_addr,
                                 &mut active_connections
@@ -377,22 +464,9 @@ pub async fn connection(
             result = connection_rx.recv() => {
                 match result {
                     Ok(msg) => {
-                        match msg {
-                            AuthorMsg::SendMessage(author_msg) => {
-                                let res_msg = ResponseMsg {
-                                    data: Message {
-                                        username: author_msg.username.clone(),
-                                        text: author_msg.text.clone(),
-                                    }
-                                };
-                                if let Ok(mut json_str) = serde_json::to_string(&res_msg) {
-                                    json_str.push('\n');
-                                    if let Err(e) = write_stream.write_all(json_str.as_bytes()).await {
-                                        eprintln!("ERROR: Tcp write fail, {e}");
-                                        break
-                                    }
-                                }
-                            }
+                        if let Err(e) = send_response(&mut write_stream, msg).await {
+                            eprintln!("ERROR: {e}");
+                            return;
                         }
                     }
                     Err(err) => {
