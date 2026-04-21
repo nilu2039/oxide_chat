@@ -278,6 +278,13 @@ pub async fn connection(
 
                 if let Ok(username) = std::str::from_utf8(&buf[..n]) {
                     active_connections.insert(connection_addr, username.to_string());
+                    if let Err(e) = write_stream
+                        .write_all(format!("Welcome {username}!\n").as_bytes())
+                        .await
+                    {
+                        eprintln!("ERROR: Tcp write fail, {e}");
+                        return;
+                    }
                     break;
                 } else {
                     eprintln!("ERROR: Invalid UTF-8 username");
