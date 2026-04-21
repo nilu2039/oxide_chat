@@ -226,9 +226,6 @@ pub async fn connection(
 
     println!("INFO: A client connected with address: {connection_addr:?}");
 
-    let mut reader = BufReader::new(read_stream);
-    let mut buf = Vec::new();
-
     loop {
         buf.clear();
 
