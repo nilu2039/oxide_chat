@@ -81,6 +81,7 @@ async fn main() -> eframe::Result {
 
 struct Message {
     text: String,
+    username: Option<String>,
     color: Color32,
 }
 
@@ -103,15 +104,13 @@ impl eframe::App for App {
 
         while let Ok(msg) = self.rx_in.try_recv() {
             let mut text = String::new();
+            let mut username = None;
             match msg {
                 ResponseMsg {
                     data: Some(msg), ..
                 } => {
-                    text = format!(
-                        "{username}: {text}",
-                        username = msg.username,
-                        text = msg.text.trim_end_matches('\n').to_string()
-                    );
+                    text = msg.text.trim_end_matches('\n').to_string();
+                    username = Option::from(msg.username);
                 }
                 ResponseMsg {
                     info_msg: Some(info),
@@ -129,19 +128,32 @@ impl eframe::App for App {
             self.messages.push(Message {
                 text,
                 color: *COLORS.choose(&mut rng).unwrap(),
+                username,
             });
         }
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.heading(RichText::new("Oxide Chat").color(egui::Color32::RED));
+            ui.add_space(10.0);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 for msg in &self.messages {
-                    ui.heading(
-                        RichText::new(&msg.text)
-                            .color(msg.color)
-                            .text_style(TextStyle::Monospace),
-                    );
+                    ui.horizontal(|ui| {
+                        if let Some(username) = &msg.username {
+                            ui.label(
+                                RichText::new(format!("{username}: "))
+                                    .color(msg.color)
+                                    .text_style(TextStyle::Heading),
+                            );
+                            ui.add_space(2.0);
+                        };
+
+                        ui.label(
+                            RichText::new(&msg.text)
+                                .color(msg.color)
+                                .text_style(TextStyle::Monospace),
+                        );
+                    });
                     ui.add_space(5.0);
                 }
             });
