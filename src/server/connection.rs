@@ -1,4 +1,6 @@
 use redis::Commands;
+use serde::Serialize;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -14,10 +16,13 @@ const BAN_LIMIT_IN_SECS: u64 = 60;
 
 #[derive(Clone)]
 pub enum Message {
-    NewMessage {
-        author_addr: SocketAddr,
-        text: String,
-    },
+    NewMessage { username: String, text: String },
+}
+
+#[derive(Serialize)]
+pub struct ResponseMsg {
+    username: String,
+    text: String,
 }
 
 struct Connection {
@@ -114,6 +119,14 @@ async fn handle_rate_limit(
     }
 }
 
+pub async fn handle_client_disconnect(
+    connection_addr: &SocketAddr,
+    active_connections: &mut HashMap<SocketAddr, String>,
+) {
+    println!("INFO: A client disconnected with address {connection_addr:?}");
+    active_connections.remove(connection_addr);
+}
+
 pub async fn connection(
     stream: TcpStream,
     connection_tx: Sender<Message>,
@@ -129,6 +142,8 @@ pub async fn connection(
             return;
         }
     };
+
+    let mut active_connections = HashMap::new();
 
     let mut connection = Connection {
         last_message: None,
@@ -165,7 +180,7 @@ pub async fn connection(
         match reader.read_until(b'\n', &mut buf).await {
             Ok(n) => {
                 if n == 0 {
-                    println!("INFO: A client disconnected with address: {connection_addr:?}");
+                    println!("INFO: connection connection broken: {connection_addr:?}");
                     return;
                 }
 
@@ -207,7 +222,10 @@ pub async fn connection(
                 };
 
                 if token_bytes == valid_token_bytes {
-                    if let Err(e) = write_stream.write_all(b"Welcome!\n").await {
+                    if let Err(e) = write_stream
+                        .write_all(b"Welcome, please enter an username!\n")
+                        .await
+                    {
                         eprintln!("ERROR: Tcp write fail, {e}");
                     }
                     break;
@@ -224,6 +242,57 @@ pub async fn connection(
         };
     }
 
+    loop {
+        buf.clear();
+
+        match reader.read_until(b'\n', &mut buf).await {
+            Ok(n) => {
+                if n == 0 {
+                    println!("INFO: client connection broken: {connection_addr:?}");
+                    return;
+                }
+
+                let (is_rate_limited, strike_count_exceed) = handle_rate_limit(
+                    &mut connection,
+                    &mut redis_conn,
+                    &connection_addr,
+                    &mut write_stream,
+                )
+                .await;
+
+                if strike_count_exceed {
+                    return;
+                }
+
+                if is_rate_limited {
+                    continue;
+                }
+
+                buf = buf
+                    .iter()
+                    .copied()
+                    .filter(|b| *b >= 32 && *b != 127)
+                    .collect();
+
+                let n = buf.len();
+
+                if let Ok(username) = std::str::from_utf8(&buf[..n]) {
+                    active_connections.insert(connection_addr, username.to_string());
+                    break;
+                } else {
+                    eprintln!("ERROR: Invalid UTF-8 username");
+                    if let Err(e) = write_stream.write_all(b"Invalid username format\n").await {
+                        eprintln!("ERROR: {e}")
+                    }
+                }
+            }
+            Err(err) => {
+                eprintln!("ERROR: Unable to read security token, {err}");
+                return;
+            }
+        }
+    }
+
     println!("INFO: A client connected with address: {connection_addr:?}");
 
     loop {
@@ -234,7 +303,10 @@ pub async fn connection(
                 match result {
                     Ok(n) => {
                         if n == 0 {
-                            println!("INFO: A client disconnected with address: {connection_addr:?}");
+                            handle_client_disconnect(
+                                &connection_addr,
+                                &mut active_connections
+                               ).await;
                             break;
                         }
 
@@ -243,7 +315,6 @@ pub async fn connection(
                             .copied()
                             .filter(|b| *b >= 32 && *b != 127)
                             .collect();
-                        buf.push(b'\n');
                         let n = buf.len();
 
                         if let Ok(text) = std::str::from_utf8(&buf[..n]) {
@@ -256,12 +327,14 @@ pub async fn connection(
                             .await;
 
                             if !is_rate_limited {
-                                if let Err(e) = connection_tx.send(Message::NewMessage {
-                                        author_addr: connection_addr,
-                                        text : text.to_string()
-                                }) {
-                                    eprintln!("ERROR: NewMessage send error, {e}");
-                                };
+                                if let Some(username) = active_connections.get(&connection_addr) {
+                                    if let Err(e) = connection_tx.send(Message::NewMessage {
+                                            text : text.to_string(),
+                                            username: username.clone()
+                                    }) {
+                                        eprintln!("ERROR: NewMessage send error, {e}");
+                                    };
+                                }
                             } else {
                                 if strike_count_exceed {
                                     break;
@@ -270,14 +343,20 @@ pub async fn connection(
                         } else {
                             eprintln!("ERROR: Stream did not contain valid UTF-8");
                             ban_user(&mut redis_conn, &mut write_stream,&connection_addr, Option::from("Invalid UTF-8, you are banned\n")).await;
-                            println!("INFO: Client disconnected with address: {connection_addr:?}");
+                            handle_client_disconnect(
+                                &connection_addr,
+                                &mut active_connections
+                                ).await;
                             break;
 
                         }
                     },
                     Err(err) => {
                         eprintln!("ERROR: Failed to read from client stream, {err}");
-                        println!("INFO: A client disconnected with address: {connection_addr:?}");
+                            handle_client_disconnect(
+                                &connection_addr,
+                                &mut active_connections
+                                ).await;
                         break;
                     }
                 }
@@ -287,9 +366,14 @@ pub async fn connection(
                 match result {
                     Ok(msg) => {
                         match msg {
-                            Message::NewMessage{author_addr, text} => {
-                                if connection_addr != author_addr {
-                                    if let Err(e) = write_stream.write_all(text.as_bytes()).await {
+                            Message::NewMessage{text, username} => {
+                                let res_msg = ResponseMsg {
+                                    username: username.clone(),
+                                    text: text.clone(),
+                                };
+                                if let Ok(mut json_str) = serde_json::to_string(&res_msg) {
+                                    json_str.push('\n');
+                                    if let Err(e) = write_stream.write_all(json_str.as_bytes()).await {
                                         eprintln!("ERROR: Tcp write fail, {e}");
                                         break
                                     }

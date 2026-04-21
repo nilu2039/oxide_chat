@@ -125,10 +125,6 @@ impl eframe::App for App {
                 );
                 if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     if !self.out_message.is_empty() {
-                        self.messages.push(Message {
-                            text: self.out_message.clone(),
-                            color: Color32::GREEN,
-                        });
                         if let Err(e) = self.tx_out.try_send(self.out_message.clone()) {
                             eprintln!("ERROR: {e}");
                         };
