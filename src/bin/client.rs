@@ -20,7 +20,12 @@ async fn handle_tcp_connection(
 
     tokio::spawn(async move {
         while let Some(msg) = rx_out.recv().await {
-            if let Err(e) = write_stream.write_all(format!("{msg}\n").as_bytes()).await {
+            let msg_bytes = format!(
+                "content-length: {msg_length}\r\n\r\n{msg}",
+                msg_length = &msg.len()
+            );
+
+            if let Err(e) = write_stream.write_all(msg_bytes.as_bytes()).await {
                 eprintln!("ERROR: {e}")
             };
         }

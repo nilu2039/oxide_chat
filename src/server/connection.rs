@@ -2,11 +2,12 @@ use crate::{Message, ResponseMsg};
 
 use redis::Commands;
 use std::collections::HashMap;
+use std::error::Error;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::net::tcp::OwnedWriteHalf;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::broadcast::{Receiver, Sender};
 
 extern crate redis;
@@ -25,6 +26,83 @@ pub enum AuthorMsg {
 struct Connection {
     last_message: Option<Instant>,
     strike_count: usize,
+}
+
+async fn read_body(
+    read_stream: &mut OwnedReadHalf,
+    body: &mut Vec<u8>,
+    connection: &mut Connection,
+    redis_conn: &mut redis::Connection,
+    connection_addr: &SocketAddr,
+    write_stream: &mut OwnedWriteHalf,
+    active_connections: &mut HashMap<SocketAddr, String>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let mut buf = [0; 100];
+    let mut raw_data = Vec::new();
+    let mut final_headers = Vec::new();
+
+    let (_, strike_count_exceed) =
+        handle_rate_limit(connection, redis_conn, connection_addr, write_stream).await;
+
+    if strike_count_exceed {
+        return Err("Strike count exceeded".into());
+    }
+
+    loop {
+        body.clear();
+
+        let n = {
+            let res = read_stream.read(&mut buf).await;
+            match res {
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln!("ERROR: TCP read error, {e}");
+                    return Err(e.into());
+                }
+            }
+        };
+
+        if n == 0 {
+            handle_client_disconnect(connection_addr, active_connections).await;
+            return Err("Client disconnected".into());
+        }
+
+        raw_data.extend_from_slice(&buf[..n]);
+
+        if let Some(pos) = raw_data.windows(4).position(|w| w == b"\r\n\r\n") {
+            let headers = &raw_data[..pos];
+            let partial_body = &raw_data[pos + 4..];
+            final_headers.extend_from_slice(headers);
+            body.extend_from_slice(partial_body);
+            break;
+        }
+    }
+
+    let headers_str = std::str::from_utf8(&final_headers)?.to_string();
+    if let Some(content_length) = headers_str
+        .lines()
+        .find(|line| line.to_ascii_lowercase().starts_with("content-length"))
+        .and_then(|line| line.split_once(":"))
+        .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+    {
+        println!("content_length {content_length}");
+        while body.len() < content_length {
+            let n = match read_stream.read(&mut buf).await {
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln!("ERROR: TCP read error, {e}");
+                    return Err(e.into());
+                }
+            };
+
+            if n == 0 {
+                return Err("Client disconnected".into());
+            }
+
+            body.extend_from_slice(&buf[..n]);
+        }
+    }
+    Ok(())
 }
 
 async fn send_response(
@@ -211,7 +289,6 @@ pub async fn connection(
         return;
     }
 
-    let mut reader = BufReader::new(&mut read_stream);
     let mut buf = Vec::new();
 
     if let Err(e) = send_response(
@@ -232,69 +309,37 @@ pub async fn connection(
     };
 
     loop {
-        buf.clear();
+        if let Err(e) = read_body(
+            &mut read_stream,
+            &mut buf,
+            &mut connection,
+            &mut redis_conn,
+            &connection_addr,
+            &mut write_stream,
+            &mut active_connections,
+        )
+        .await
+        {
+            eprintln!("ERROR: {e}");
+            return;
+        }
 
-        match reader.read_until(b'\n', &mut buf).await {
-            Ok(n) => {
-                if n == 0 {
-                    println!("INFO: connection connection broken: {connection_addr:?}");
-                    return;
-                }
+        println!("I AM HERE");
 
-                let (is_rate_limited, strike_count_exceed) = handle_rate_limit(
-                    &mut connection,
-                    &mut redis_conn,
-                    &connection_addr,
-                    &mut write_stream,
-                )
-                .await;
+        buf = buf
+            .iter()
+            .copied()
+            .filter(|b| *b >= 32 && *b != 127)
+            .collect();
 
-                if strike_count_exceed {
-                    return;
-                }
+        let n = buf.len();
 
-                if is_rate_limited {
-                    continue;
-                }
+        let token_hex = &buf[..n];
 
-                buf = buf
-                    .iter()
-                    .copied()
-                    .filter(|b| *b >= 32 && *b != 127)
-                    .collect();
-
-                let n = buf.len();
-
-                let token_hex = &buf[..n];
-
-                let token_bytes = match hex::decode(token_hex) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        eprintln!("ERROR: Hex token decode error, {e}");
-                        if let Err(e) = send_response(
-                            &mut write_stream,
-                            AuthorMsg::SendInfo("Invalid token\n".to_string()),
-                        )
-                        .await
-                        {
-                            eprintln!("ERROR: {e}");
-                        }
-                        continue;
-                    }
-                };
-
-                if token_bytes == valid_token_bytes {
-                    if let Err(e) = send_response(
-                        &mut write_stream,
-                        AuthorMsg::SendInfo("Welcome, please enter an username!\n".to_string()),
-                    )
-                    .await
-                    {
-                        eprintln!("ERROR: {e}");
-                    }
-                    break;
-                }
-
+        let token_bytes = match hex::decode(token_hex) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("ERROR: Hex token decode error, {e}");
                 if let Err(e) = send_response(
                     &mut write_stream,
                     AuthorMsg::SendInfo("Invalid token\n".to_string()),
@@ -303,74 +348,76 @@ pub async fn connection(
                 {
                     eprintln!("ERROR: {e}");
                 }
-            }
-            Err(err) => {
-                eprintln!("ERROR: Unable to read security token, {err}");
-                return;
+                continue;
             }
         };
+
+        if token_bytes == valid_token_bytes {
+            if let Err(e) = send_response(
+                &mut write_stream,
+                AuthorMsg::SendInfo("Welcome, please enter an username!\n".to_string()),
+            )
+            .await
+            {
+                eprintln!("ERROR: {e}");
+            }
+            break;
+        }
+
+        if let Err(e) = send_response(
+            &mut write_stream,
+            AuthorMsg::SendInfo("Invalid token\n".to_string()),
+        )
+        .await
+        {
+            eprintln!("ERROR: {e}");
+        }
     }
 
     loop {
-        buf.clear();
+        if let Err(e) = read_body(
+            &mut read_stream,
+            &mut buf,
+            &mut connection,
+            &mut redis_conn,
+            &connection_addr,
+            &mut write_stream,
+            &mut active_connections,
+        )
+        .await
+        {
+            eprintln!("ERROR: {e}");
+            return;
+        }
 
-        match reader.read_until(b'\n', &mut buf).await {
-            Ok(n) => {
-                if n == 0 {
-                    println!("INFO: client connection broken: {connection_addr:?}");
-                    return;
-                }
+        buf = buf
+            .iter()
+            .copied()
+            .filter(|b| *b >= 32 && *b != 127)
+            .collect();
 
-                let (is_rate_limited, strike_count_exceed) = handle_rate_limit(
-                    &mut connection,
-                    &mut redis_conn,
-                    &connection_addr,
-                    &mut write_stream,
-                )
-                .await;
+        let n = buf.len();
 
-                if strike_count_exceed {
-                    return;
-                }
-
-                if is_rate_limited {
-                    continue;
-                }
-
-                buf = buf
-                    .iter()
-                    .copied()
-                    .filter(|b| *b >= 32 && *b != 127)
-                    .collect();
-
-                let n = buf.len();
-
-                if let Ok(username) = std::str::from_utf8(&buf[..n]) {
-                    active_connections.insert(connection_addr, username.to_string());
-                    if let Err(e) = send_response(
-                        &mut write_stream,
-                        AuthorMsg::SendInfo(format!("Welcome {username}!\n").to_string()),
-                    )
-                    .await
-                    {
-                        eprintln!("ERROR: {e}");
-                    }
-                    break;
-                } else {
-                    eprintln!("ERROR: Invalid UTF-8 username");
-                    if let Err(e) = send_response(
-                        &mut write_stream,
-                        AuthorMsg::SendError("Invalid username format\n".to_string()),
-                    )
-                    .await
-                    {
-                        eprintln!("ERROR: {e}");
-                    }
-                }
+        if let Ok(username) = std::str::from_utf8(&buf[..n]) {
+            active_connections.insert(connection_addr, username.to_string());
+            if let Err(e) = send_response(
+                &mut write_stream,
+                AuthorMsg::SendInfo(format!("Welcome {username}!\n").to_string()),
+            )
+            .await
+            {
+                eprintln!("ERROR: {e}");
             }
-            Err(err) => {
-                eprintln!("ERROR: Unable to read security token, {err}");
-                return;
+            break;
+        } else {
+            eprintln!("ERROR: Invalid UTF-8 username");
+            if let Err(e) = send_response(
+                &mut write_stream,
+                AuthorMsg::SendError("Invalid username format\n".to_string()),
+            )
+            .await
+            {
+                eprintln!("ERROR: {e}");
             }
         }
     }
@@ -378,49 +425,34 @@ pub async fn connection(
     println!("INFO: A client connected with address: {connection_addr:?}");
 
     loop {
-        buf.clear();
-
         tokio::select! {
-            result = reader.read_until(b'\n', &mut buf) => {
+            result = read_body(
+                &mut read_stream,
+                &mut buf,
+                &mut connection,
+                &mut redis_conn,
+                &connection_addr,
+                &mut write_stream,
+                &mut active_connections,
+            ) => {
                 match result {
-                    Ok(n) => {
-                        if n == 0 {
-                            handle_client_disconnect(
-                                &connection_addr,
-                                &mut active_connections
-                               ).await;
-                            break;
-                        }
-
+                    Ok(_) => {
                         buf = buf
                             .iter()
                             .copied()
                             .filter(|b| *b >= 32 && *b != 127)
                             .collect();
+
                         let n = buf.len();
 
                         if let Ok(text) = std::str::from_utf8(&buf[..n]) {
-                            let (is_rate_limited, strike_count_exceed) = handle_rate_limit(
-                                &mut connection,
-                                &mut redis_conn,
-                                &connection_addr,
-                                &mut write_stream,
-                            )
-                            .await;
-
-                            if !is_rate_limited {
-                                if let Some(username) = active_connections.get(&connection_addr) {
-                                    if let Err(e) = connection_tx.send(AuthorMsg::SendMessage(Message{
-                                            text : text.to_string(),
-                                            username: username.clone()
-                                    })) {
-                                        eprintln!("ERROR: NewMessage send error, {e}");
-                                    };
-                                }
-                            } else {
-                                if strike_count_exceed {
-                                    break;
-                                }
+                            if let Some(username) = active_connections.get(&connection_addr) {
+                                if let Err(e) = connection_tx.send(AuthorMsg::SendMessage(Message{
+                                        text : text.to_string(),
+                                        username: username.clone()
+                                })) {
+                                    eprintln!("ERROR: NewMessage send error, {e}");
+                                };
                             }
                         } else {
                             eprintln!("ERROR: Stream did not contain valid UTF-8");
