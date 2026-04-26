@@ -31,22 +31,13 @@ struct Connection {
 async fn read_body(
     read_stream: &mut OwnedReadHalf,
     body: &mut Vec<u8>,
-    connection: &mut Connection,
-    redis_conn: &mut redis::Connection,
     connection_addr: &SocketAddr,
-    write_stream: &mut OwnedWriteHalf,
     active_connections: &mut HashMap<SocketAddr, String>,
 ) -> Result<usize, Box<dyn Error + Send + Sync>> {
+    println!("read_body ENTERED");
     let mut buf = [0; 100];
     let mut raw_data = Vec::new();
     let mut final_headers = Vec::new();
-
-    let (_, strike_count_exceed) =
-        handle_rate_limit(connection, redis_conn, connection_addr, write_stream).await;
-
-    if strike_count_exceed {
-        return Err("Strike count exceeded".into());
-    }
 
     loop {
         body.clear();
@@ -79,6 +70,7 @@ async fn read_body(
     }
 
     let headers_str = std::str::from_utf8(&final_headers)?.to_string();
+    println!("STR: {headers_str}");
     if let Some(content_length) = headers_str
         .lines()
         .find(|line| line.to_ascii_lowercase().starts_with("content-length"))
@@ -217,6 +209,7 @@ async fn handle_rate_limit(
     connection_addr: &SocketAddr,
     write_stream: &mut OwnedWriteHalf,
 ) -> (bool, bool) {
+    println!("INSIDE handle_rate_limit");
     let now = Instant::now();
     let diff = match connection.last_message {
         Some(last) => now.duration_since(last),
@@ -228,6 +221,8 @@ async fn handle_rate_limit(
     } else {
         Duration::from_secs(0)
     };
+
+    println!("DIFF {diff:?}");
 
     if diff > MESSAGE_RATE {
         connection.strike_count = 0;
@@ -316,15 +311,28 @@ pub async fn connection(
         match read_body(
             &mut read_stream,
             &mut buf,
-            &mut connection,
-            &mut redis_conn,
             &connection_addr,
-            &mut write_stream,
             &mut active_connections,
         )
         .await
         {
             Ok(n) => {
+                let (is_rate_limited, strike_count_exceed) = handle_rate_limit(
+                    &mut connection,
+                    &mut redis_conn,
+                    &connection_addr,
+                    &mut write_stream,
+                )
+                .await;
+
+                if strike_count_exceed {
+                    return;
+                }
+
+                if is_rate_limited {
+                    continue;
+                }
+
                 let token_hex = &buf[..n];
                 let token_bytes = match hex::decode(token_hex) {
                     Ok(t) => t,
@@ -374,10 +382,7 @@ pub async fn connection(
         match read_body(
             &mut read_stream,
             &mut buf,
-            &mut connection,
-            &mut redis_conn,
             &connection_addr,
-            &mut write_stream,
             &mut active_connections,
         )
         .await
@@ -420,23 +425,35 @@ pub async fn connection(
             result = read_body(
                 &mut read_stream,
                 &mut buf,
-                &mut connection,
-                &mut redis_conn,
                 &connection_addr,
-                &mut write_stream,
                 &mut active_connections,
             ) => {
                 match result {
                     Ok(n) => {
                         if let Ok(text) = std::str::from_utf8(&buf[..n]) {
-                            if let Some(username) = active_connections.get(&connection_addr) {
-                                if let Err(e) = connection_tx.send(AuthorMsg::SendMessage(Message{
-                                        text : text.to_string(),
-                                        username: username.clone()
-                                })) {
-                                    eprintln!("ERROR: NewMessage send error, {e}");
-                                };
+                            let (is_rate_limited, strike_count_exceed) = handle_rate_limit(
+                                &mut connection,
+                                &mut redis_conn,
+                                &connection_addr,
+                                &mut write_stream,
+                            )
+                            .await;
+
+                            if !is_rate_limited {
+                                if let Some(username) = active_connections.get(&connection_addr) {
+                                    if let Err(e) = connection_tx.send(AuthorMsg::SendMessage(Message{
+                                            text : text.to_string(),
+                                            username: username.clone()
+                                    })) {
+                                        eprintln!("ERROR: NewMessage send error, {e}");
+                                    };
+                                }
+                            } else {
+                                if strike_count_exceed {
+                                    break;
+                                }
                             }
+
                         } else {
                             eprintln!("ERROR: Stream did not contain valid UTF-8");
 

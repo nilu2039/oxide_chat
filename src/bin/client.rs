@@ -20,6 +20,7 @@ async fn handle_tcp_connection(
 
     tokio::spawn(async move {
         while let Some(msg) = rx_out.recv().await {
+            let msg = msg.trim_end_matches('\n').to_string();
             let msg_bytes = format!(
                 "content-length: {msg_length}\r\n\r\n{msg}",
                 msg_length = &msg.len()
