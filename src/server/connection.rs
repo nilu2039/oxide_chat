@@ -36,7 +36,7 @@ async fn read_body(
     connection_addr: &SocketAddr,
     write_stream: &mut OwnedWriteHalf,
     active_connections: &mut HashMap<SocketAddr, String>,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<usize, Box<dyn Error + Send + Sync>> {
     let mut buf = [0; 100];
     let mut raw_data = Vec::new();
     let mut final_headers = Vec::new();
@@ -102,7 +102,11 @@ async fn read_body(
             body.extend_from_slice(&buf[..n]);
         }
     }
-    Ok(())
+
+    body.retain(|b| (*b >= 32 && *b != 127) || *b == b'\n' || *b == b'\r');
+    let n = body.len();
+
+    Ok(n)
 }
 
 async fn send_response(
@@ -309,7 +313,7 @@ pub async fn connection(
     };
 
     loop {
-        if let Err(e) = read_body(
+        match read_body(
             &mut read_stream,
             &mut buf,
             &mut connection,
@@ -320,26 +324,36 @@ pub async fn connection(
         )
         .await
         {
-            eprintln!("ERROR: {e}");
-            return;
-        }
+            Ok(n) => {
+                let token_hex = &buf[..n];
+                let token_bytes = match hex::decode(token_hex) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("ERROR: Hex token decode error, {e}");
+                        if let Err(e) = send_response(
+                            &mut write_stream,
+                            AuthorMsg::SendInfo("Invalid token\n".to_string()),
+                        )
+                        .await
+                        {
+                            eprintln!("ERROR: {e}");
+                        }
+                        continue;
+                    }
+                };
 
-        println!("I AM HERE");
+                if token_bytes == valid_token_bytes {
+                    if let Err(e) = send_response(
+                        &mut write_stream,
+                        AuthorMsg::SendInfo("Welcome, please enter an username!\n".to_string()),
+                    )
+                    .await
+                    {
+                        eprintln!("ERROR: {e}");
+                    }
+                    break;
+                }
 
-        buf = buf
-            .iter()
-            .copied()
-            .filter(|b| *b >= 32 && *b != 127)
-            .collect();
-
-        let n = buf.len();
-
-        let token_hex = &buf[..n];
-
-        let token_bytes = match hex::decode(token_hex) {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("ERROR: Hex token decode error, {e}");
                 if let Err(e) = send_response(
                     &mut write_stream,
                     AuthorMsg::SendInfo("Invalid token\n".to_string()),
@@ -348,34 +362,16 @@ pub async fn connection(
                 {
                     eprintln!("ERROR: {e}");
                 }
-                continue;
+            }
+            Err(e) => {
+                eprintln!("ERROR: {e}");
+                return;
             }
         };
-
-        if token_bytes == valid_token_bytes {
-            if let Err(e) = send_response(
-                &mut write_stream,
-                AuthorMsg::SendInfo("Welcome, please enter an username!\n".to_string()),
-            )
-            .await
-            {
-                eprintln!("ERROR: {e}");
-            }
-            break;
-        }
-
-        if let Err(e) = send_response(
-            &mut write_stream,
-            AuthorMsg::SendInfo("Invalid token\n".to_string()),
-        )
-        .await
-        {
-            eprintln!("ERROR: {e}");
-        }
     }
 
     loop {
-        if let Err(e) = read_body(
+        match read_body(
             &mut read_stream,
             &mut buf,
             &mut connection,
@@ -386,40 +382,35 @@ pub async fn connection(
         )
         .await
         {
-            eprintln!("ERROR: {e}");
-            return;
-        }
-
-        buf = buf
-            .iter()
-            .copied()
-            .filter(|b| *b >= 32 && *b != 127)
-            .collect();
-
-        let n = buf.len();
-
-        if let Ok(username) = std::str::from_utf8(&buf[..n]) {
-            active_connections.insert(connection_addr, username.to_string());
-            if let Err(e) = send_response(
-                &mut write_stream,
-                AuthorMsg::SendInfo(format!("Welcome {username}!\n").to_string()),
-            )
-            .await
-            {
-                eprintln!("ERROR: {e}");
+            Ok(n) => {
+                if let Ok(username) = std::str::from_utf8(&buf[..n]) {
+                    active_connections.insert(connection_addr, username.to_string());
+                    if let Err(e) = send_response(
+                        &mut write_stream,
+                        AuthorMsg::SendInfo(format!("Welcome {username}!\n").to_string()),
+                    )
+                    .await
+                    {
+                        eprintln!("ERROR: {e}");
+                    }
+                    break;
+                } else {
+                    eprintln!("ERROR: Invalid UTF-8 username");
+                    if let Err(e) = send_response(
+                        &mut write_stream,
+                        AuthorMsg::SendError("Invalid username format\n".to_string()),
+                    )
+                    .await
+                    {
+                        eprintln!("ERROR: {e}");
+                    }
+                }
             }
-            break;
-        } else {
-            eprintln!("ERROR: Invalid UTF-8 username");
-            if let Err(e) = send_response(
-                &mut write_stream,
-                AuthorMsg::SendError("Invalid username format\n".to_string()),
-            )
-            .await
-            {
+            Err(e) => {
                 eprintln!("ERROR: {e}");
+                return;
             }
-        }
+        };
     }
 
     println!("INFO: A client connected with address: {connection_addr:?}");
@@ -436,15 +427,7 @@ pub async fn connection(
                 &mut active_connections,
             ) => {
                 match result {
-                    Ok(_) => {
-                        buf = buf
-                            .iter()
-                            .copied()
-                            .filter(|b| *b >= 32 && *b != 127)
-                            .collect();
-
-                        let n = buf.len();
-
+                    Ok(n) => {
                         if let Ok(text) = std::str::from_utf8(&buf[..n]) {
                             if let Some(username) = active_connections.get(&connection_addr) {
                                 if let Err(e) = connection_tx.send(AuthorMsg::SendMessage(Message{

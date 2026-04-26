@@ -1,6 +1,6 @@
 use oxide_chat::ResponseMsg;
 
-use eframe::egui::{self, Color32, Context, RichText, TextStyle};
+use eframe::egui::{self, Color32, Context, Key, KeyboardShortcut, Modifiers, RichText, TextStyle};
 use rand::rng;
 use rand::seq::IndexedRandom;
 use std::vec;
@@ -141,17 +141,24 @@ impl eframe::App for App {
         egui::Panel::bottom("input_label").show_inside(ui, |ui| {
             let response = ui.add_sized(
                 ui.available_size(),
-                egui::TextEdit::singleline(&mut self.out_message)
+                egui::TextEdit::multiline(&mut self.out_message)
+                    .desired_rows(2)
+                    .return_key(KeyboardShortcut {
+                        modifiers: Modifiers {
+                            shift: true,
+                            ..Default::default()
+                        },
+                        logical_key: Key::Enter,
+                    })
                     .font(TextStyle::Heading)
                     .id(input_id),
             );
-            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 if !self.out_message.is_empty() {
                     if let Err(e) = self.tx_out.try_send(self.out_message.clone()) {
                         eprintln!("ERROR: {e}");
                     };
                     self.out_message.clear();
-                    ui.memory_mut(|m| m.request_focus(input_id))
                 }
             }
         });
