@@ -154,7 +154,9 @@ impl eframe::App for App {
                     .font(TextStyle::Heading)
                     .id(input_id),
             );
-            if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            if response.has_focus()
+                && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift)
+            {
                 if !self.out_message.is_empty() {
                     if let Err(e) = self.tx_out.try_send(self.out_message.clone()) {
                         eprintln!("ERROR: {e}");
