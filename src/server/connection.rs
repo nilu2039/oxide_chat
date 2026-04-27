@@ -34,7 +34,6 @@ async fn read_body(
     connection_addr: &SocketAddr,
     active_connections: &mut HashMap<SocketAddr, String>,
 ) -> Result<usize, Box<dyn Error + Send + Sync>> {
-    println!("read_body ENTERED");
     let mut buf = [0; 100];
     let mut raw_data = Vec::new();
     let mut final_headers = Vec::new();
@@ -70,14 +69,12 @@ async fn read_body(
     }
 
     let headers_str = std::str::from_utf8(&final_headers)?.to_string();
-    println!("STR: {headers_str}");
     if let Some(content_length) = headers_str
         .lines()
         .find(|line| line.to_ascii_lowercase().starts_with("content-length"))
         .and_then(|line| line.split_once(":"))
         .and_then(|(_, value)| value.trim().parse::<usize>().ok())
     {
-        println!("content_length {content_length}");
         while body.len() < content_length {
             let n = match read_stream.read(&mut buf).await {
                 Ok(n) => n,
@@ -209,7 +206,6 @@ async fn handle_rate_limit(
     connection_addr: &SocketAddr,
     write_stream: &mut OwnedWriteHalf,
 ) -> (bool, bool) {
-    println!("INSIDE handle_rate_limit");
     let now = Instant::now();
     let diff = match connection.last_message {
         Some(last) => now.duration_since(last),
@@ -221,8 +217,6 @@ async fn handle_rate_limit(
     } else {
         Duration::from_secs(0)
     };
-
-    println!("DIFF {diff:?}");
 
     if diff > MESSAGE_RATE {
         connection.strike_count = 0;
