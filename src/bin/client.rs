@@ -140,30 +140,36 @@ impl eframe::App for App {
         let input_id = ui.make_persistent_id("chat_input");
 
         egui::Panel::bottom("input_label").show_inside(ui, |ui| {
-            let response = ui.add_sized(
-                ui.available_size(),
-                egui::TextEdit::multiline(&mut self.out_message)
-                    .desired_rows(2)
-                    .return_key(KeyboardShortcut {
-                        modifiers: Modifiers {
-                            shift: true,
-                            ..Default::default()
-                        },
-                        logical_key: Key::Enter,
-                    })
-                    .font(TextStyle::Heading)
-                    .id(input_id),
-            );
-            if response.has_focus()
-                && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift)
-            {
-                if !self.out_message.is_empty() {
-                    if let Err(e) = self.tx_out.try_send(self.out_message.clone()) {
-                        eprintln!("ERROR: {e}");
-                    };
-                    self.out_message.clear();
-                }
-            }
+            let row_height = ui.text_style_height(&TextStyle::Heading);
+            let max_height = row_height * 6.0 + ui.spacing().item_spacing.y * 5.0;
+
+            egui::ScrollArea::vertical()
+                .max_height(max_height)
+                .id_salt("input_scroll")
+                .show(ui, |ui| {
+                    ui.add_sized(
+                        [ui.available_width(), 0.0],
+                        egui::TextEdit::multiline(&mut self.out_message)
+                            .desired_rows(2)
+                            .return_key(KeyboardShortcut {
+                                modifiers: Modifiers {
+                                    shift: true,
+                                    ..Default::default()
+                                },
+                                logical_key: Key::Enter,
+                            })
+                            .font(TextStyle::Heading)
+                            .id(input_id),
+                    );
+                    if ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift) {
+                        if !self.out_message.is_empty() {
+                            if let Err(e) = self.tx_out.try_send(self.out_message.clone()) {
+                                eprintln!("ERROR: {e}");
+                            };
+                            self.out_message.clear();
+                        }
+                    }
+                })
         });
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
@@ -174,7 +180,7 @@ impl eframe::App for App {
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     for msg in &self.messages {
-                        ui.horizontal_wrapped(|ui| {
+                        ui.horizontal(|ui| {
                             if let Some(username) = &msg.username {
                                 ui.label(
                                     RichText::new(format!("{username}: "))
@@ -184,11 +190,16 @@ impl eframe::App for App {
                                 ui.add_space(2.0);
                             };
 
-                            ui.label(
-                                RichText::new(&msg.text)
-                                    .color(Color32::WHITE)
-                                    .text_style(TextStyle::Monospace),
-                            );
+                            ui.with_layout(
+                                egui::Layout::left_to_right(egui::Align::TOP).with_main_wrap(true),
+                                |ui| {
+                                    ui.label(
+                                        RichText::new(&msg.text)
+                                            .color(Color32::WHITE)
+                                            .text_style(TextStyle::Monospace),
+                                    );
+                                },
+                            )
                         });
                         ui.add_space(5.0);
                     }
